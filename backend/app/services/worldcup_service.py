@@ -189,7 +189,10 @@ class WorldCupService:
         detail["ai_analysis"] = None
         detail["ai_analysis_error"] = None
         try:
-            detail["ai_analysis"] = await WorldCupService._get_ai_analysis(detail, refresh=refresh or ai_refresh)
+            if ai_refresh:
+                detail["ai_analysis"] = await WorldCupService._get_ai_analysis(detail, refresh=True)
+            else:
+                detail["ai_analysis"] = await WorldCupService._get_cached_ai_analysis(detail)
         except Exception as exc:
             detail["ai_analysis_error"] = str(exc) or "AI 解读生成失败"
         return detail
@@ -1401,6 +1404,17 @@ class WorldCupService:
         _ai_analysis_cache[match["match_id"]] = deepcopy(analysis)
         await WorldCupService._set_cached_object(cache_key, analysis, 6 * 60 * 60)
         return analysis
+
+    @staticmethod
+    async def _get_cached_ai_analysis(match: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        cache_key = f'{WorldCupService._ai_analysis_cache_key_prefix}{match["match_id"]}'
+        if match["match_id"] in _ai_analysis_cache:
+            return deepcopy(_ai_analysis_cache[match["match_id"]])
+        cached = await WorldCupService._get_cached_object(cache_key)
+        if cached:
+            _ai_analysis_cache[match["match_id"]] = deepcopy(cached)
+            return cached
+        return None
 
     @staticmethod
     async def _generate_ai_analysis(match: Dict[str, Any]) -> Dict[str, Any]:

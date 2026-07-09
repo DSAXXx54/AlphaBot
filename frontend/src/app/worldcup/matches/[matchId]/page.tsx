@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { ArrowLeft, ArrowRight, CalendarClock, ExternalLink, Goal, LineChart as LineChartIcon, RefreshCw, ShieldCheck } from 'lucide-react';
@@ -102,6 +102,8 @@ export default function WorldCupMatchDetailPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshingAi, setRefreshingAi] = useState(false);
+  const [loadingAi, setLoadingAi] = useState(false);
+  const aiRequestMatchIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const load = async (refresh = false) => {
@@ -121,9 +123,48 @@ export default function WorldCupMatchDetailPage() {
     };
 
     if (params.matchId) {
+      aiRequestMatchIdRef.current = null;
       load();
     }
   }, [params.matchId]);
+
+  useEffect(() => {
+    if (!params.matchId || !match || match.ai_analysis || match.ai_analysis_error) {
+      return;
+    }
+    if (aiRequestMatchIdRef.current === params.matchId) {
+      return;
+    }
+
+    aiRequestMatchIdRef.current = params.matchId;
+    let cancelled = false;
+    setLoadingAi(true);
+
+    const loadAi = async () => {
+      const response = await getWorldCupMatchDetail(params.matchId, false, true);
+      if (!cancelled && response.success && response.data) {
+        setMatch((current) => {
+          if (!current || current.match_id !== response.data?.match_id) {
+            return current;
+          }
+          return {
+            ...current,
+            ai_analysis: response.data.ai_analysis,
+            ai_analysis_error: response.data.ai_analysis_error,
+          };
+        });
+      }
+      if (!cancelled) {
+        setLoadingAi(false);
+      }
+    };
+
+    loadAi();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [params.matchId, match]);
 
   if (loading) {
     return (
@@ -366,6 +407,10 @@ export default function WorldCupMatchDetailPage() {
                   <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
                     <div className="text-xs text-destructive">AI 分析出错</div>
                     <div className="mt-2 text-sm leading-6 text-muted-foreground">{match.ai_analysis_error}</div>
+                  </div>
+                ) : loadingAi ? (
+                  <div className="rounded-xl border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
+                    AI 解读生成中，已不阻塞页面加载。
                   </div>
                 ) : match.ai_analysis ? (
                   <>
