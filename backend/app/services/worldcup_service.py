@@ -1980,70 +1980,301 @@ class WorldCupService:
         h2h_market = WorldCupService._find_market(match, "h2h")
         spread_market = WorldCupService._find_market(match, "asian_handicap")
         totals_market = WorldCupService._find_market(match, "totals")
+        if match.get("bookmaker_quotes"):
+            match["bookmaker_quotes"] = WorldCupService._decorate_bookmaker_quotes(match)
         diagnostics = WorldCupService._build_market_diagnostics(match, h2h_market, spread_market)
         fundamentals = WorldCupService._build_fundamentals_profile(match, diagnostics)
         heat_profile = WorldCupService._build_heat_profile(match, diagnostics, fundamentals)
         match["market_diagnostics"] = diagnostics
         match["fundamentals"] = fundamentals
         match["heat_profile"] = heat_profile
+        recommendation = WorldCupService._build_recommendation(
+            match,
+            diagnostics,
+            fundamentals,
+            heat_profile,
+            h2h_market,
+            spread_market,
+            totals_market,
+        )
+        match["featured_pick"] = recommendation
+        market = WorldCupService._find_market(match, recommendation.get("bet_type") or "")
+        if market and recommendation.get("signal_label"):
+            match["key_market"] = deepcopy(market)
 
-        candidates: List[Dict[str, Any]] = []
-        candidates.extend(WorldCupService._polymarket_value_candidates(match, h2h_market))
-        candidates.extend(WorldCupService._theory_price_candidates(match, diagnostics, spread_market))
-        fallback_candidate = WorldCupService._market_consensus_candidate(match, spread_market, totals_market, h2h_market)
-        if fallback_candidate:
-            candidates.append(fallback_candidate)
-        candidates = WorldCupService._filter_candidates(match, candidates, diagnostics, heat_profile)
+    @staticmethod
+    def _build_recommendation(
+        match: Dict[str, Any],
+        diagnostics: Dict[str, Any],
+        fundamentals: Dict[str, Any],
+        heat_profile: Dict[str, Any],
+        h2h_market: Optional[Dict[str, Any]],
+        spread_market: Optional[Dict[str, Any]],
+        totals_market: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not (h2h_market or spread_market or totals_market):
+            return WorldCupService._pending_pick()
 
-        if not candidates:
-            match["featured_pick"] = WorldCupService._pending_pick()
-            if h2h_market or spread_market or totals_market:
-                decision = "pass"
-                match["featured_pick"]["side"] = "观望"
-                match["featured_pick"]["decision"] = decision
-                match["featured_pick"]["strategy"] = "无优势"
-                match["featured_pick"]["signal_label"] = None
-                match["featured_pick"]["signal_tier"] = None
-                match["featured_pick"]["signal_grade"] = None
-                match["featured_pick"]["warning_message"] = WorldCupService._pass_warning_message(
-                    diagnostics,
-                    fundamentals,
-                    heat_profile,
-                )
-                match["featured_pick"]["book_probability"] = None
-                match["featured_pick"]["fair_probability"] = None
-                match["featured_pick"]["rationale"] = [
-                    "当前推荐引擎已完成盘口、理论值与热度诊断，但没有形成可执行信号。",
-                    f"机构共识评分 {diagnostics['consensus_score']}，基础面评分 {fundamentals['score']}，优先继续观望。",
-                    "建议等待更多盘口同步、基础面补全或临场水位再次偏离后再决定是否出手。",
-                ]
-            return
+        candidate = (
+            WorldCupService._build_spread_recommendation(match, diagnostics, fundamentals, heat_profile, spread_market)
+            or WorldCupService._build_totals_recommendation(match, diagnostics, totals_market)
+            or WorldCupService._build_h2h_recommendation(match, diagnostics, fundamentals, h2h_market)
+        )
+        if not candidate:
+            return WorldCupService._build_pass_pick(diagnostics, fundamentals, heat_profile)
 
-        best = max(candidates, key=lambda item: item["edge"])
-        confidence = WorldCupService._confidence_from_edge(best["edge"], best.get("strength", 0.0))
-        signal_profile = WorldCupService._signal_profile(best, confidence)
+        confidence = WorldCupService._confidence_from_edge(candidate["edge"], candidate.get("strength", 0.0))
+        signal_profile = WorldCupService._signal_profile(candidate, confidence)
         stake_pct = signal_profile["stake_pct"]
-        match["featured_pick"] = {
+        return {
             "decision": signal_profile["decision"],
-            "bet_type": best["bet_type"],
-            "strategy": best["strategy"],
-            "side": best["side"],
-            "signal_label": best.get("signal_label"),
+            "bet_type": candidate["bet_type"],
+            "strategy": candidate["strategy"],
+            "side": candidate["side"],
+            "signal_label": candidate.get("signal_label"),
             "signal_tier": signal_profile["signal_tier"],
             "signal_grade": signal_profile["signal_grade"],
             "warning_message": signal_profile["warning_message"],
-            "book_probability": best.get("book_probability"),
-            "fair_probability": best.get("fair_probability"),
+            "book_probability": candidate.get("book_probability"),
+            "fair_probability": candidate.get("fair_probability"),
             "confidence": confidence,
-            "edge": round(best["edge"] * 100, 2),
+            "edge": round(candidate["edge"] * 100, 2),
             "stake_pct": stake_pct,
             "stake_amount": round(INITIAL_BANKROLL * stake_pct / 100, 2),
-            "rationale": best["rationale"],
+            "rationale": candidate["rationale"],
         }
-        if best.get("market_type"):
-            market = WorldCupService._find_market(match, best["market_type"])
-            if market:
-                match["key_market"] = deepcopy(market)
+
+    @staticmethod
+    def _build_spread_recommendation(
+        match: Dict[str, Any],
+        diagnostics: Dict[str, Any],
+        fundamentals: Dict[str, Any],
+        heat_profile: Dict[str, Any],
+        spread_market: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not spread_market or not spread_market.get("options"):
+            return None
+        options = {str(option.get("label")): option for option in spread_market.get("options", [])}
+        favorite_side = str(diagnostics.get("favorite_side") or "")
+        underdog_side = str(diagnostics.get("underdog_side") or "")
+        pricing_signal = str(diagnostics.get("pricing_signal") or "")
+        consensus_pass = bool(diagnostics.get("consensus_pass"))
+        support_level = str(fundamentals.get("support_level") or "")
+        trap_type = str(heat_profile.get("trap_type") or "")
+
+        if pricing_signal == "favorite_discounted" and consensus_pass and support_level != "fragile" and favorite_side in options:
+            option = options[favorite_side]
+            probability = WorldCupService._to_float(option.get("probability")) or 0.0
+            return {
+                "bet_type": "asian_handicap",
+                "strategy": "机构共识",
+                "market_type": "asian_handicap",
+                "side": favorite_side,
+                "signal_label": favorite_side,
+                "book_probability": round(probability, 4),
+                "fair_probability": None,
+                "edge": max(probability - 0.5, 0.04),
+                "strength": max(probability, fundamentals.get("score", 50) / 100),
+                "rationale": [
+                    "多机构理论盘口与实际盘口基本同档，热门方向通过了共识筛选。",
+                    "热门一侧实际水位低于理论水位，机构在顺势避险而不是单纯造热。",
+                    f"基础面评分 {fundamentals['score']}，当前没有出现明显反驳盘口的代理变量。",
+                ],
+            }
+
+        if pricing_signal == "favorite_overpriced" and underdog_side in options:
+            option = options[underdog_side]
+            probability = WorldCupService._to_float(option.get("probability")) or 0.0
+            return {
+                "bet_type": "asian_handicap",
+                "strategy": "冷门预警",
+                "market_type": "asian_handicap",
+                "side": underdog_side,
+                "signal_label": underdog_side,
+                "book_probability": round(probability, 4),
+                "fair_probability": None,
+                "edge": 0.03 if trap_type in {"fake_deep", "fake_shallow"} else 0.02,
+                "strength": probability,
+                "rationale": [
+                    "热门方向没有得到机构持续防守，实际水位高于理论水位。",
+                    "当前更像诱盘或放冷环境，推荐仅作为冷门预警与防守信号。",
+                    "这一类方向不与顺势主仓竞争，只保留轻仓或防守用途。",
+                ],
+            }
+        return None
+
+    @staticmethod
+    def _build_totals_recommendation(
+        match: Dict[str, Any],
+        diagnostics: Dict[str, Any],
+        totals_market: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not totals_market or not totals_market.get("options"):
+            return None
+        if not diagnostics.get("consensus_pass"):
+            return None
+        strongest_total = max(totals_market["options"], key=lambda item: item["probability"])
+        probability = WorldCupService._to_float(strongest_total.get("probability")) or 0.0
+        if probability < 0.56:
+            return None
+        return {
+            "bet_type": "totals",
+            "strategy": "机构共识",
+            "market_type": "totals",
+            "side": strongest_total["label"],
+            "signal_label": strongest_total["label"],
+            "book_probability": round(probability, 4),
+            "fair_probability": None,
+            "edge": probability - 0.5,
+            "strength": probability,
+            "rationale": [
+                "当前主胜负方向没有形成更优信号，回退为一致性更强的大小球方向。",
+                "大小球一侧概率已经显著偏离均衡位，且当前盘口诊断没有出现严重分歧。",
+                "这类信号优先作为次级执行方案，不抢占顺势让球单的优先级。",
+            ],
+        }
+
+    @staticmethod
+    def _build_h2h_recommendation(
+        match: Dict[str, Any],
+        diagnostics: Dict[str, Any],
+        fundamentals: Dict[str, Any],
+        h2h_market: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not h2h_market or not h2h_market.get("options"):
+            return None
+        value_candidate = WorldCupService._aligned_polymarket_value(match, diagnostics, fundamentals, h2h_market)
+        if value_candidate:
+            return value_candidate
+        if not diagnostics.get("consensus_pass"):
+            return None
+        leader = max(h2h_market["options"], key=lambda item: item["probability"])
+        probability = WorldCupService._to_float(leader.get("probability")) or 0.0
+        favorite_team = diagnostics.get("favorite_team")
+        if probability < 0.5:
+            return None
+        if favorite_team and leader.get("label") not in {favorite_team, "平局"}:
+            return None
+        return {
+            "bet_type": "h2h",
+            "strategy": "市场共识",
+            "market_type": "h2h",
+            "side": f'{leader["label"]} 胜' if leader["label"] != "平局" else "平局",
+            "signal_label": leader["label"],
+            "book_probability": round(probability, 4),
+            "fair_probability": None,
+            "edge": max(probability - 0.48, 0.015),
+            "strength": max(probability, fundamentals.get("score", 50) / 100),
+            "rationale": [
+                "当前没有更强的让球或大小球执行点，回退为与盘口主方向一致的胜平负共识。",
+                "该方向只在盘口诊断没有明显反对意见时保留，避免与主方向冲突。",
+                "胜平负共识仅作试探信号，不作为高优先级主仓。",
+            ],
+        }
+
+    @staticmethod
+    def _aligned_polymarket_value(
+        match: Dict[str, Any],
+        diagnostics: Dict[str, Any],
+        fundamentals: Dict[str, Any],
+        h2h_market: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if not match.get("polymarket_probabilities"):
+            return None
+        bookmaker_probs = {option["label"]: option["probability"] for option in h2h_market.get("options", [])}
+        polymarket_map = WorldCupService._normalize_probability_labels(match)
+        favorite_team = diagnostics.get("favorite_team")
+        pricing_signal = str(diagnostics.get("pricing_signal") or "")
+        aligned_label: Optional[str] = None
+        if favorite_team and pricing_signal != "favorite_overpriced":
+            aligned_label = favorite_team
+        elif pricing_signal == "favorite_overpriced":
+            aligned_label = match["away_team"] if favorite_team == match["home_team"] else match["home_team"]
+        if not aligned_label:
+            return None
+
+        label_map = {
+            match["home_team"]: polymarket_map.get("home"),
+            "平局": polymarket_map.get("draw"),
+            match["away_team"]: polymarket_map.get("away"),
+        }
+        poly_prob = label_map.get(aligned_label)
+        book_prob = bookmaker_probs.get(aligned_label)
+        if poly_prob is None or book_prob is None:
+            return None
+        edge = poly_prob - book_prob
+        if edge < 0.03:
+            return None
+        if pricing_signal == "favorite_discounted" and aligned_label != favorite_team:
+            return None
+        strategy = "价值单" if pricing_signal != "favorite_overpriced" else "冷门预警"
+        rationale = [
+            f"Polymarket 对 {aligned_label} 的概率高于传统赔率去水后结果 {edge * 100:.1f} 个百分点。",
+            "该价值信号已经与当前盘口主方向完成对齐，不再和盘口诊断冲突。",
+            f"基础面评分 {fundamentals['score']}，当前只在不违背主盘口结论时才允许进入主决策层。",
+        ]
+        return {
+            "bet_type": "h2h",
+            "strategy": strategy,
+            "market_type": "h2h",
+            "side": f"{aligned_label} 胜" if aligned_label != "平局" else "平局",
+            "signal_label": aligned_label,
+            "book_probability": round(book_prob, 4),
+            "fair_probability": round(poly_prob, 4),
+            "edge": edge,
+            "strength": poly_prob,
+            "rationale": rationale,
+        }
+
+    @staticmethod
+    def _build_pass_pick(
+        diagnostics: Dict[str, Any],
+        fundamentals: Dict[str, Any],
+        heat_profile: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        pick = WorldCupService._pending_pick()
+        pick["side"] = "观望"
+        pick["decision"] = "pass"
+        pick["strategy"] = "无优势"
+        pick["warning_message"] = WorldCupService._pass_warning_message(diagnostics, fundamentals, heat_profile)
+        pick["rationale"] = [
+            "当前推荐引擎已先完成盘口诊断，再决定是否允许进入执行层。",
+            f"机构共识评分 {diagnostics['consensus_score']}，基础面评分 {fundamentals['score']}，当前不足以形成清晰主推。",
+            "建议等待盘口继续收敛，或补充更完整的基本面与多机构水位数据后再决定。",
+        ]
+        return pick
+
+    @staticmethod
+    def _decorate_bookmaker_quotes(match: Dict[str, Any]) -> List[Dict[str, Any]]:
+        decorated: List[Dict[str, Any]] = []
+        for quote in match.get("bookmaker_quotes", []):
+            if not isinstance(quote, dict):
+                continue
+            item = deepcopy(quote)
+            analysis = WorldCupService._analyze_bookmaker_quote(match, item)
+            if analysis:
+                item["diagnostics"] = {
+                    "theoretical_handicap": WorldCupService._format_theoretical_handicap(
+                        analysis["favorite_team"],
+                        analysis["theoretical_line"],
+                    ),
+                    "actual_handicap": (
+                        WorldCupService._format_theoretical_handicap(
+                            analysis["favorite_team"],
+                            analysis["actual_line"],
+                        )
+                        if analysis.get("actual_line") is not None
+                        else None
+                    ),
+                    "theoretical_home_water": round(1 / analysis["theoretical_home_prob"], 2),
+                    "theoretical_away_water": round(1 / analysis["theoretical_away_prob"], 2),
+                    "actual_home_water": analysis.get("actual_home_water"),
+                    "actual_away_water": analysis.get("actual_away_water"),
+                    "pricing_signal": analysis.get("pricing_signal"),
+                    "favorite_team": analysis.get("favorite_team"),
+                }
+            decorated.append(item)
+        return decorated
 
     @staticmethod
     def _build_market_diagnostics(
@@ -2589,92 +2820,6 @@ class WorldCupService:
         }
 
     @staticmethod
-    def _theory_price_candidates(
-        match: Dict[str, Any],
-        diagnostics: Dict[str, Any],
-        spread_market: Optional[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        if not spread_market or not spread_market.get("options"):
-            return []
-        favorite_side = diagnostics.get("favorite_side")
-        underdog_side = diagnostics.get("underdog_side")
-        pricing_signal = diagnostics.get("pricing_signal")
-        if pricing_signal not in {"favorite_discounted", "favorite_overpriced"}:
-            return []
-
-        options = {str(option.get("label")): option for option in spread_market.get("options", [])}
-        if pricing_signal == "favorite_discounted" and favorite_side in options:
-            option = options[favorite_side]
-            probability = WorldCupService._to_float(option.get("probability")) or 0.0
-            return [
-                {
-                    "bet_type": "asian_handicap",
-                    "strategy": "理论偏差",
-                    "market_type": "asian_handicap",
-                    "side": favorite_side,
-                    "signal_label": favorite_side,
-                    "book_probability": round(probability, 4),
-                    "fair_probability": None,
-                    "edge": max(0.03, 0.62 - probability) if probability < 0.62 else 0.035,
-                    "strength": probability,
-                    "rationale": [
-                        "欧转亚理论水位显示热门一侧应当更便宜，当前实际盘口仍在主动压低热门水位。",
-                        "这类信号代表机构在顺势避险，而不是单纯放大热门吸引力。",
-                        "只有在理论盘口与实际盘口大致同档时，才把它升级为可执行方向。",
-                    ],
-                }
-            ]
-        if pricing_signal == "favorite_overpriced" and underdog_side in options:
-            option = options[underdog_side]
-            probability = WorldCupService._to_float(option.get("probability")) or 0.0
-            return [
-                {
-                    "bet_type": "asian_handicap",
-                    "strategy": "冷门预警",
-                    "market_type": "asian_handicap",
-                    "side": underdog_side,
-                    "signal_label": underdog_side,
-                    "book_probability": round(probability, 4),
-                    "fair_probability": None,
-                    "edge": 0.03,
-                    "strength": probability,
-                    "rationale": [
-                        "热门一侧实际水位高于理论水位，说明机构并未急于防守热门方向。",
-                        "如果热门仍然享受名气与降盘关注，这类定价更像诱导而非真实阻击。",
-                        "当前信号只作为冷门预警，不宜直接上主仓。",
-                    ],
-                }
-            ]
-        return []
-
-    @staticmethod
-    def _filter_candidates(
-        match: Dict[str, Any],
-        candidates: List[Dict[str, Any]],
-        diagnostics: Dict[str, Any],
-        heat_profile: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        filtered: List[Dict[str, Any]] = []
-        for candidate in candidates:
-            strategy = str(candidate.get("strategy") or "")
-            adjusted = deepcopy(candidate)
-            rationale = list(adjusted.get("rationale") or [])
-            if strategy == "一致性单":
-                adjusted["strategy"] = "机构共识"
-            if strategy in {"一致性单", "市场共识"} and not diagnostics.get("consensus_pass"):
-                continue
-            if heat_profile.get("trap_type") in {"fake_deep", "fake_shallow"} and strategy in {"一致性单", "市场共识"}:
-                continue
-            if diagnostics.get("consensus_pass"):
-                adjusted["edge"] = float(adjusted.get("edge") or 0.0) + 0.01
-                rationale.append("该方向通过了当前版本的理论盘口与机构一致性检查。")
-            if heat_profile.get("cold_flags"):
-                rationale.append(f"风险提示：{'、'.join(heat_profile['cold_flags'])}。")
-            adjusted["rationale"] = rationale
-            filtered.append(adjusted)
-        return filtered
-
-    @staticmethod
     def _pass_warning_message(
         diagnostics: Dict[str, Any],
         fundamentals: Dict[str, Any],
@@ -2760,125 +2905,6 @@ class WorldCupService:
             match["polymarket_probabilities"] = normalized
 
     @staticmethod
-    def _polymarket_value_candidates(match: Dict[str, Any], h2h_market: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not h2h_market or not match.get("polymarket_probabilities"):
-            return []
-
-        bookmaker_probs = {option["label"]: option["probability"] for option in h2h_market.get("options", [])}
-        polymarket_map = WorldCupService._normalize_probability_labels(match)
-        candidates = []
-
-        label_map = {
-            match["home_team"]: polymarket_map.get("home"),
-            "平局": polymarket_map.get("draw"),
-            match["away_team"]: polymarket_map.get("away"),
-        }
-        for label, book_prob in bookmaker_probs.items():
-            poly_prob = label_map.get(label)
-            if poly_prob is None:
-                continue
-            edge = poly_prob - book_prob
-            if edge < 0.03:
-                continue
-            candidates.append(
-                {
-                    "bet_type": "h2h",
-                    "strategy": "价值单",
-                    "market_type": "h2h",
-                    "side": f"{label} 胜" if label != "平局" else "平局",
-                    "signal_label": label,
-                    "book_probability": round(book_prob, 4),
-                    "fair_probability": round(poly_prob, 4),
-                    "edge": edge,
-                    "strength": poly_prob,
-                    "rationale": [
-                        f"Polymarket 对 {label} 的定价高于 ESPN/DraftKings 去水后概率 {edge * 100:.1f} 个百分点。",
-                        "同一场比赛同时存在传统赔率与预测市场时，优先抓两者之间的显著价差。",
-                        "这类信号更适合做小仓位价值单，而不是重仓方向单。",
-                    ],
-                }
-            )
-        return candidates
-
-    @staticmethod
-    def _market_consensus_candidate(
-        match: Dict[str, Any],
-        spread_market: Optional[Dict[str, Any]],
-        totals_market: Optional[Dict[str, Any]],
-        h2h_market: Optional[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        candidates: List[Dict[str, Any]] = []
-
-        if spread_market and spread_market.get("options"):
-            favorite = max(spread_market["options"], key=lambda item: item["probability"])
-            spread_line = WorldCupService._to_float(spread_market.get("line"))
-            if favorite["probability"] >= 0.535 and spread_line is not None and abs(spread_line) >= 0.5:
-                candidates.append(
-                    {
-                        "bet_type": "asian_handicap",
-                        "strategy": "一致性单",
-                        "market_type": "asian_handicap",
-                        "side": favorite["label"],
-                        "signal_label": favorite["label"],
-                        "book_probability": round(favorite["probability"], 4),
-                        "fair_probability": None,
-                        "edge": max(favorite["probability"] - 0.5, 0.0),
-                        "strength": favorite["probability"],
-                        "rationale": [
-                            "让球盘已经给出明确让步，且优势方在即时赔率下仍保持更高的去水后概率。",
-                            "当让球深度与赔率方向一致时，说明市场对强弱判断比较统一。",
-                            "这类信号适合作为没有跨市场价差时的基础方向参考。",
-                        ],
-                    }
-                )
-
-        if totals_market and totals_market.get("options"):
-            strongest_total = max(totals_market["options"], key=lambda item: item["probability"])
-            if strongest_total["probability"] >= 0.545:
-                candidates.append(
-                    {
-                        "bet_type": "totals",
-                        "strategy": "一致性单",
-                        "market_type": "totals",
-                        "side": strongest_total["label"],
-                        "signal_label": strongest_total["label"],
-                        "book_probability": round(strongest_total["probability"], 4),
-                        "fair_probability": None,
-                        "edge": max(strongest_total["probability"] - 0.5, 0.0),
-                        "strength": strongest_total["probability"],
-                        "rationale": [
-                            "大小球一侧的去水后概率已经明显高于均衡位。",
-                            "在没有跨市场对照时，大小球通常比胜平负更容易形成清晰的一致预期。",
-                            "当前逻辑优先选择概率优势更集中的盘口，而不是勉强做胜平负。",
-                        ],
-                    }
-                )
-
-        if not candidates and h2h_market and h2h_market.get("options"):
-            leader = max(h2h_market["options"], key=lambda item: item["probability"])
-            if leader["probability"] >= 0.5:
-                candidates.append(
-                    {
-                        "bet_type": "h2h",
-                        "strategy": "市场共识",
-                        "market_type": "h2h",
-                        "side": f'{leader["label"]} 胜' if leader["label"] != "平局" else "平局",
-                        "signal_label": leader["label"],
-                        "book_probability": round(leader["probability"], 4),
-                        "fair_probability": None,
-                        "edge": max(leader["probability"] - 0.45, 0.0) / 2,
-                        "strength": leader["probability"],
-                        "rationale": [
-                            "当前没有更强的跨市场价差信号，回退为最基础的胜平负市场共识。",
-                            "这一类推荐置信度会明显低于 Polymarket 与传统赔率出现分歧时的价值单。",
-                            "如果后续盘口继续走深，优先升级为让球或大小球方向。",
-                        ],
-                    }
-                )
-
-        return max(candidates, key=lambda item: item["edge"]) if candidates else None
-
-    @staticmethod
     def _normalize_probability_labels(match: Dict[str, Any]) -> Dict[str, float]:
         normalized: Dict[str, float] = {}
         home_aliases = WorldCupService._team_aliases(match["home_team"])
@@ -2941,21 +2967,6 @@ class WorldCupService:
                 "signal_tier": "core",
                 "signal_grade": signal_grade,
                 "warning_message": warning_message,
-                "stake_pct": stake_pct,
-            }
-
-        if strategy == "理论偏差":
-            if confidence >= 68:
-                stake_pct = 1.2
-                signal_grade = "strong"
-            else:
-                stake_pct = 0.8
-                signal_grade = "caution"
-            return {
-                "decision": "bet",
-                "signal_tier": "satellite",
-                "signal_grade": signal_grade,
-                "warning_message": "该单来自理论盘口与实际水位偏差，优先小中仓参与并观察临场修正。",
                 "stake_pct": stake_pct,
             }
 

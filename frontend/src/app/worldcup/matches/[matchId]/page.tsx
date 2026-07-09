@@ -48,7 +48,6 @@ function formatPercent(value?: number) {
 function strategyVariant(strategy?: string): 'success' | 'warning' | 'secondary' | 'outline' {
   if (strategy === '价值单') return 'success';
   if (strategy === '一致性单' || strategy === '机构共识') return 'warning';
-  if (strategy === '理论偏差') return 'secondary';
   if (strategy === '市场共识') return 'secondary';
   if (strategy === '冷门预警') return 'destructive';
   return 'outline';
@@ -662,6 +661,44 @@ export default function WorldCupMatchDetailPage() {
                           <div className="font-medium">{quote.bookmaker}</div>
                           <Badge variant="outline">机构</Badge>
                         </div>
+                        {quote.diagnostics && (
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            <div className="rounded-xl border border-border/80 bg-muted/30 p-3">
+                              <div className="text-[11px] text-muted-foreground">理论 / 实际盘口</div>
+                              <div className="mt-1 text-sm font-medium">
+                                {quote.diagnostics.theoretical_handicap || '--'}
+                              </div>
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                实际 {quote.diagnostics.actual_handicap || '--'}
+                              </div>
+                            </div>
+                            <div className="rounded-xl border border-border/80 bg-muted/30 p-3">
+                              <div className="text-[11px] text-muted-foreground">定价信号</div>
+                              <div className="mt-1 text-sm font-medium">
+                                {pricingSignalLabel(quote.diagnostics.pricing_signal)}
+                              </div>
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                热门 {quote.diagnostics.favorite_team || '--'}
+                              </div>
+                            </div>
+                            <div className="rounded-xl border border-border/80 bg-muted/30 p-3">
+                              <div className="text-[11px] text-muted-foreground">主队理论 / 实际水位</div>
+                              <div className="mt-1 text-sm font-medium">
+                                {(quote.diagnostics.theoretical_home_water?.toFixed(2) || '--')}
+                                {' / '}
+                                {(quote.diagnostics.actual_home_water?.toFixed(2) || '--')}
+                              </div>
+                            </div>
+                            <div className="rounded-xl border border-border/80 bg-muted/30 p-3">
+                              <div className="text-[11px] text-muted-foreground">客队理论 / 实际水位</div>
+                              <div className="mt-1 text-sm font-medium">
+                                {(quote.diagnostics.theoretical_away_water?.toFixed(2) || '--')}
+                                {' / '}
+                                {(quote.diagnostics.actual_away_water?.toFixed(2) || '--')}
+                              </div>
+                            </div>
+                          </div>
+                        )}
                         <div className="mt-3 grid gap-3">
                           {[quote.h2h_market, quote.spread_market, quote.totals_market]
                             .filter((market) => Boolean(market))

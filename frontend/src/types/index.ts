@@ -172,6 +172,16 @@ export interface WorldCupBookmakerQuote {
   h2h_market?: WorldCupMarket | null;
   spread_market?: WorldCupMarket | null;
   totals_market?: WorldCupMarket | null;
+  diagnostics?: {
+    theoretical_handicap?: string | null;
+    actual_handicap?: string | null;
+    theoretical_home_water?: number | null;
+    theoretical_away_water?: number | null;
+    actual_home_water?: number | null;
+    actual_away_water?: number | null;
+    pricing_signal?: string | null;
+    favorite_team?: string | null;
+  } | null;
 }
 
 export interface WorldCupMatchDetail extends WorldCupMatchSummary {
