@@ -14,7 +14,9 @@ import httpx
 from redis import asyncio as redis_asyncio
 
 from app.core.config import settings
+from app.services.api_football_service import ApiFootballService
 from app.services.llm_registry import LLMRegistry, LLMProfileName
+from app.services.the_odds_api_service import TheOddsApiService
 
 logger = logging.getLogger("uvicorn")
 
@@ -181,6 +183,9 @@ class WorldCupService:
         if not match:
             return None
         detail = deepcopy(match)
+        detail = await ApiFootballService.enrich_match_fundamentals(detail)
+        detail = await WorldCupService._enrich_match_bookmaker_quotes(detail)
+        await WorldCupService._persist_enriched_match_if_needed(match, detail)
         ledger = await WorldCupService._get_bankroll_ledger()
         detail = WorldCupService._hydrate_match_from_ledger(detail, ledger)
         WorldCupService._normalize_polymarket_state(detail)
@@ -205,6 +210,72 @@ class WorldCupService:
         if matches:
             return matches
         return []
+
+    @staticmethod
+    async def _enrich_match_bookmaker_quotes(match: Dict[str, Any]) -> Dict[str, Any]:
+        if match.get("bookmaker_quotes"):
+            return match
+        quotes = await TheOddsApiService.get_match_bookmaker_quotes(match)
+        if not quotes:
+            return match
+        enriched = deepcopy(match)
+        enriched["bookmaker_quotes"] = quotes
+        primary = quotes[0]
+        markets = [
+            primary.get("h2h_market"),
+            primary.get("spread_market"),
+            primary.get("totals_market"),
+        ]
+        normalized_markets = [market for market in markets if isinstance(market, dict)]
+        if normalized_markets:
+            enriched["markets"] = normalized_markets
+            enriched["key_market"] = deepcopy(normalized_markets[0])
+            WorldCupService._refresh_featured_pick(enriched)
+        return enriched
+
+    @staticmethod
+    async def _persist_enriched_match_if_needed(original: Dict[str, Any], enriched: Dict[str, Any]) -> None:
+        original_payload = json.dumps(original, ensure_ascii=False, sort_keys=True)
+        enriched_payload = json.dumps(enriched, ensure_ascii=False, sort_keys=True)
+        if original_payload == enriched_payload:
+            return
+        await WorldCupService._set_json_value(
+            WorldCupService._match_key(str(enriched.get("match_id"))),
+            enriched,
+        )
+
+    @classmethod
+    async def _enrich_matches_external_sources(cls, matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not matches:
+            return matches
+
+        enriched_matches = [deepcopy(match) for match in matches]
+        quotes_by_match = await TheOddsApiService.get_bookmaker_quotes_map(enriched_matches)
+
+        for match in enriched_matches:
+            match_id = str(match.get("match_id") or "")
+            quotes = quotes_by_match.get(match_id) or []
+            if not quotes:
+                continue
+            match["bookmaker_quotes"] = quotes
+            primary = quotes[0]
+            markets = [
+                primary.get("h2h_market"),
+                primary.get("spread_market"),
+                primary.get("totals_market"),
+            ]
+            normalized_markets = [market for market in markets if isinstance(market, dict)]
+            if normalized_markets:
+                match["markets"] = normalized_markets
+                match["key_market"] = deepcopy(normalized_markets[0])
+
+        enriched_matches = await ApiFootballService.enrich_matches_fundamentals(enriched_matches)
+
+        for match in enriched_matches:
+            if match.get("markets") or match.get("polymarket_probabilities"):
+                cls._refresh_featured_pick(match)
+
+        return enriched_matches
 
     @classmethod
     def _match_key(cls, match_id: str) -> str:
@@ -627,6 +698,14 @@ class WorldCupService:
                     event = cls._match_polymarket_event(match, events)
                     if event:
                         cls._apply_polymarket_event(match, event)
+
+        updated_matches = await cls._enrich_matches_external_sources(updated_matches)
+        updated_by_date = {date_key: [] for date_key in date_keys}
+        for match in updated_matches:
+            date_key = cls._kickoff_date_key(match.get("kickoff_at"))
+            if not date_key:
+                continue
+            updated_by_date.setdefault(date_key, []).append(match)
 
         all_matches = await cls._load_matches()
         retained_matches = [
@@ -1634,8 +1713,11 @@ class WorldCupService:
         return {
             "theoretical_handicap": None,
             "actual_handicap": None,
+            "opening_handicap": None,
             "theoretical_home_water": None,
             "theoretical_away_water": None,
+            "opening_home_water": None,
+            "opening_away_water": None,
             "actual_home_water": None,
             "actual_away_water": None,
             "favorite_team": None,
@@ -1643,6 +1725,8 @@ class WorldCupService:
             "underdog_side": None,
             "pricing_signal": "unknown",
             "line_delta": None,
+            "line_move_delta": None,
+            "movement_signal": None,
             "consensus_score": 0,
             "consensus_pass": False,
             "consensus_notes": [
@@ -1661,6 +1745,7 @@ class WorldCupService:
             "squad_health_score": 50,
             "venue_fit_score": 50,
             "pedigree_score": 50,
+            "head_to_head_score": 50,
             "summary_tags": [
                 "当前版本以盘口数据为主，基础面因子待接入真实近况与伤停数据。",
             ],
@@ -1709,6 +1794,14 @@ class WorldCupService:
     def _normalize_text(value: str) -> str:
         normalized = re.sub(r"[^a-z0-9]+", " ", value.lower())
         return re.sub(r"\s+", " ", normalized).strip()
+
+    @staticmethod
+    def _team_names_match(left: Optional[str], right: Optional[str]) -> bool:
+        if not left or not right:
+            return False
+        left_aliases = set(WorldCupService._team_aliases(str(left)))
+        right_aliases = set(WorldCupService._team_aliases(str(right)))
+        return bool(left_aliases & right_aliases)
 
     @staticmethod
     def _extract_market_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -2065,20 +2158,21 @@ class WorldCupService:
         if pricing_signal == "favorite_discounted" and consensus_pass and support_level != "fragile" and favorite_side in options:
             option = options[favorite_side]
             probability = WorldCupService._to_float(option.get("probability")) or 0.0
+            strategy = "主推方向" if support_level == "supportive" and fundamentals.get("score", 50) >= 60 else "机构共识"
             return {
                 "bet_type": "asian_handicap",
-                "strategy": "机构共识",
+                "strategy": strategy,
                 "market_type": "asian_handicap",
                 "side": favorite_side,
                 "signal_label": favorite_side,
                 "book_probability": round(probability, 4),
                 "fair_probability": None,
-                "edge": max(probability - 0.5, 0.04),
+                "edge": max(probability - 0.5, 0.055 if strategy == "主推方向" else 0.04),
                 "strength": max(probability, fundamentals.get("score", 50) / 100),
                 "rationale": [
                     "多机构理论盘口与实际盘口基本同档，热门方向通过了共识筛选。",
                     "热门一侧实际水位低于理论水位，机构在顺势避险而不是单纯造热。",
-                    f"基础面评分 {fundamentals['score']}，当前没有出现明显反驳盘口的代理变量。",
+                    f"基础面评分 {fundamentals['score']}，近况 {fundamentals['recent_form_score']}，伤停 {fundamentals['squad_health_score']}。",
                 ],
             }
 
@@ -2205,6 +2299,8 @@ class WorldCupService:
         edge = poly_prob - book_prob
         if edge < 0.03:
             return None
+        if fundamentals.get("support_level") == "fragile" and aligned_label == favorite_team:
+            return None
         if pricing_signal == "favorite_discounted" and aligned_label != favorite_team:
             return None
         strategy = "价值单" if pricing_signal != "favorite_overpriced" else "冷门预警"
@@ -2283,34 +2379,31 @@ class WorldCupService:
         spread_market: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         diagnostics = WorldCupService._pending_market_diagnostics()
+        movement_snapshot = WorldCupService._build_line_movement_snapshot(match)
         bookmaker_quotes = [quote for quote in (match.get("bookmaker_quotes") or []) if isinstance(quote, dict)]
         if bookmaker_quotes:
             multi_bookmaker = WorldCupService._build_multi_bookmaker_diagnostics(match, bookmaker_quotes)
             if multi_bookmaker:
+                multi_bookmaker.update(movement_snapshot)
+                WorldCupService._append_movement_consensus_notes(multi_bookmaker)
                 return multi_bookmaker
         if not h2h_market or not h2h_market.get("options"):
             diagnostics["consensus_notes"] = ["缺少胜平负市场，暂时无法推导理论盘口。"]
             return diagnostics
 
-        home_prob = next(
-            (option.get("probability") for option in h2h_market["options"] if option.get("label") == match["home_team"]),
-            None,
-        )
-        away_prob = next(
-            (option.get("probability") for option in h2h_market["options"] if option.get("label") == match["away_team"]),
-            None,
-        )
-        home_prob = WorldCupService._to_float(home_prob)
-        away_prob = WorldCupService._to_float(away_prob)
+        probabilities = WorldCupService._extract_h2h_probabilities(match, h2h_market)
+        home_prob = probabilities.get("home")
+        draw_prob = probabilities.get("draw")
+        away_prob = probabilities.get("away")
         if home_prob is None or away_prob is None:
             diagnostics["consensus_notes"] = ["当前胜平负市场不完整，暂时无法推导理论盘口。"]
             return diagnostics
 
-        favorite_team = match["home_team"] if home_prob >= away_prob else match["away_team"]
-        favorite_prob = max(home_prob, away_prob)
-        theoretical_abs_line = WorldCupService._probability_to_theoretical_line(favorite_prob)
-        theoretical_line = -theoretical_abs_line if favorite_team == match["home_team"] else theoretical_abs_line
-        theoretical_home_prob, theoretical_away_prob = WorldCupService._line_to_cover_probabilities(theoretical_line)
+        theoretical = WorldCupService._derive_theoretical_market_line(match, home_prob, draw_prob or 0.0, away_prob)
+        favorite_team = str(theoretical["favorite_team"])
+        theoretical_line = float(theoretical["theoretical_line"])
+        theoretical_home_prob = float(theoretical["theoretical_home_prob"])
+        theoretical_away_prob = float(theoretical["theoretical_away_prob"])
 
         actual_line = WorldCupService._to_float(spread_market.get("line")) if spread_market else None
         actual_home_option = (
@@ -2353,7 +2446,10 @@ class WorldCupService:
                 pricing_signal = "favorite_overpriced"
 
         consensus_notes = [
-            f"理论盘口推导为 {WorldCupService._format_theoretical_handicap(favorite_team, theoretical_line)}。",
+            (
+                f"欧转亚理论盘口为 {WorldCupService._format_theoretical_handicap(favorite_team, theoretical_line)}，"
+                f"理论水位主/客 {round(1 / theoretical_home_prob, 2)}/{round(1 / theoretical_away_prob, 2)}。"
+            ),
         ]
         consensus_score = 35
         if actual_line is not None:
@@ -2416,6 +2512,8 @@ class WorldCupService:
                 "consensus_notes": consensus_notes,
             }
         )
+        diagnostics.update(movement_snapshot)
+        WorldCupService._append_movement_consensus_notes(diagnostics)
         return diagnostics
 
     @staticmethod
@@ -2531,28 +2629,146 @@ class WorldCupService:
         return diagnostics
 
     @staticmethod
+    def _build_line_movement_snapshot(match: Dict[str, Any]) -> Dict[str, Any]:
+        movement = match.get("line_movement") or []
+        if not isinstance(movement, list) or not movement:
+            return {
+                "opening_handicap": None,
+                "opening_home_water": None,
+                "opening_away_water": None,
+                "line_move_delta": None,
+                "movement_signal": None,
+            }
+        opening = next((item for item in movement if str(item.get("label") or "") == "开盘"), movement[0])
+        latest = movement[-1]
+        opening_line = WorldCupService._to_float(opening.get("line"))
+        latest_line = WorldCupService._to_float(latest.get("line"))
+        opening_home_water = WorldCupService._to_float(opening.get("home_odds"))
+        opening_away_water = WorldCupService._to_float(opening.get("away_odds"))
+        movement_signal = WorldCupService._movement_signal(match, opening, latest)
+        line_move_delta = None
+        if opening_line is not None and latest_line is not None:
+            line_move_delta = round(latest_line - opening_line, 2)
+        return {
+            "opening_handicap": WorldCupService._format_handicap_from_home_line(match, opening_line),
+            "opening_home_water": opening_home_water,
+            "opening_away_water": opening_away_water,
+            "line_move_delta": line_move_delta,
+            "movement_signal": movement_signal,
+        }
+
+    @staticmethod
+    def _movement_signal(match: Dict[str, Any], opening: Dict[str, Any], latest: Dict[str, Any]) -> Optional[str]:
+        opening_line = WorldCupService._to_float(opening.get("line"))
+        latest_line = WorldCupService._to_float(latest.get("line"))
+        opening_home_water = WorldCupService._to_float(opening.get("home_odds"))
+        opening_away_water = WorldCupService._to_float(opening.get("away_odds"))
+        latest_home_water = WorldCupService._to_float(latest.get("home_odds"))
+        latest_away_water = WorldCupService._to_float(latest.get("away_odds"))
+        if opening_line is None or latest_line is None:
+            return None
+
+        favorite_opening_team = WorldCupService._favorite_team_from_home_line(match, opening_line)
+        if not favorite_opening_team:
+            return "平手震荡"
+        favorite_opening_water = opening_home_water if favorite_opening_team == match.get("home_team") else opening_away_water
+        favorite_latest_team = WorldCupService._favorite_team_from_home_line(match, latest_line)
+        favorite_latest_water = latest_home_water if favorite_opening_team == match.get("home_team") else latest_away_water
+
+        favorite_strengthened = WorldCupService._favorite_strengthened(
+            match,
+            favorite_opening_team,
+            opening_line,
+            latest_line,
+        )
+        water_drop = (
+            favorite_opening_water is not None
+            and favorite_latest_water is not None
+            and favorite_latest_water <= favorite_opening_water - 0.05
+        )
+        water_rise = (
+            favorite_opening_water is not None
+            and favorite_latest_water is not None
+            and favorite_latest_water >= favorite_opening_water + 0.05
+        )
+
+        if favorite_strengthened and water_drop:
+            return "升盘降水"
+        if favorite_strengthened and water_rise:
+            return "升盘升水"
+        if not favorite_strengthened and water_drop:
+            return "降盘降水"
+        if not favorite_strengthened and water_rise:
+            return "降盘升水"
+        if favorite_latest_team != favorite_opening_team:
+            return "强弱反转"
+        if abs((latest_line or 0.0) - (opening_line or 0.0)) <= 0.01:
+            return "平盘调水"
+        return "正常收敛"
+
+    @staticmethod
+    def _favorite_strengthened(
+        match: Dict[str, Any],
+        favorite_team: str,
+        opening_line: float,
+        latest_line: float,
+    ) -> bool:
+        if favorite_team == match.get("home_team"):
+            return latest_line < opening_line
+        return latest_line > opening_line
+
+    @staticmethod
+    def _favorite_team_from_home_line(match: Dict[str, Any], home_line: Optional[float]) -> Optional[str]:
+        normalized = WorldCupService._to_float(home_line)
+        if normalized is None:
+            return None
+        if normalized < 0:
+            return str(match.get("home_team") or "")
+        if normalized > 0:
+            return str(match.get("away_team") or "")
+        return None
+
+    @staticmethod
+    def _format_handicap_from_home_line(match: Dict[str, Any], home_line: Optional[float]) -> Optional[str]:
+        normalized = WorldCupService._to_float(home_line)
+        if normalized is None:
+            return None
+        favorite_team = WorldCupService._favorite_team_from_home_line(match, normalized)
+        if not favorite_team:
+            return "平手 0"
+        signed_line = normalized if favorite_team == match.get("away_team") else normalized
+        return WorldCupService._format_theoretical_handicap(favorite_team, signed_line)
+
+    @staticmethod
+    def _append_movement_consensus_notes(diagnostics: Dict[str, Any]) -> None:
+        movement_signal = diagnostics.get("movement_signal")
+        opening_handicap = diagnostics.get("opening_handicap")
+        actual_handicap = diagnostics.get("actual_handicap")
+        notes = diagnostics.get("consensus_notes")
+        if not isinstance(notes, list) or not movement_signal:
+            return
+        if opening_handicap and actual_handicap:
+            notes.append(f"盘口演化：{opening_handicap} -> {actual_handicap}，形态 {movement_signal}。")
+        else:
+            notes.append(f"盘口演化形态：{movement_signal}。")
+
+    @staticmethod
     def _analyze_bookmaker_quote(match: Dict[str, Any], quote: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         h2h_market = quote.get("h2h_market") or {}
         spread_market = quote.get("spread_market") or {}
         if not h2h_market or not h2h_market.get("options"):
             return None
-        home_prob = next(
-            (option.get("probability") for option in h2h_market["options"] if option.get("label") == match["home_team"]),
-            None,
-        )
-        away_prob = next(
-            (option.get("probability") for option in h2h_market["options"] if option.get("label") == match["away_team"]),
-            None,
-        )
-        home_prob = WorldCupService._to_float(home_prob)
-        away_prob = WorldCupService._to_float(away_prob)
+        probabilities = WorldCupService._extract_h2h_probabilities(match, h2h_market)
+        home_prob = probabilities.get("home")
+        draw_prob = probabilities.get("draw")
+        away_prob = probabilities.get("away")
         if home_prob is None or away_prob is None:
             return None
-        favorite_team = match["home_team"] if home_prob >= away_prob else match["away_team"]
-        favorite_prob = max(home_prob, away_prob)
-        theoretical_abs_line = WorldCupService._probability_to_theoretical_line(favorite_prob)
-        theoretical_line = -theoretical_abs_line if favorite_team == match["home_team"] else theoretical_abs_line
-        theoretical_home_prob, theoretical_away_prob = WorldCupService._line_to_cover_probabilities(theoretical_line)
+        theoretical = WorldCupService._derive_theoretical_market_line(match, home_prob, draw_prob or 0.0, away_prob)
+        favorite_team = str(theoretical["favorite_team"])
+        theoretical_line = float(theoretical["theoretical_line"])
+        theoretical_home_prob = float(theoretical["theoretical_home_prob"])
+        theoretical_away_prob = float(theoretical["theoretical_away_prob"])
 
         actual_line = WorldCupService._to_float(spread_market.get("line")) if spread_market else None
         actual_home_option = (
@@ -2608,43 +2824,97 @@ class WorldCupService:
     def _build_fundamentals_profile(match: Dict[str, Any], diagnostics: Dict[str, Any]) -> Dict[str, Any]:
         home_context = ((match.get("team_context") or {}).get("home") or {})
         away_context = ((match.get("team_context") or {}).get("away") or {})
+        api_football_context = match.get("api_football_context") or {}
         favorite_team = diagnostics.get("favorite_team")
         motivation_score = 70 if WorldCupService._is_knockout_stage(match.get("stage")) else 58
         recent_form_score = WorldCupService._recent_form_score(match, home_context, away_context, favorite_team)
         venue_fit_score = WorldCupService._venue_fit_score(match, home_context, away_context, favorite_team)
         pedigree_score = WorldCupService._pedigree_score(match, home_context, away_context, favorite_team)
         squad_health_score = WorldCupService._squad_health_score(match, home_context, away_context, favorite_team)
+        head_to_head_score = WorldCupService._head_to_head_score(match, favorite_team, api_football_context)
+        api_recent_form_score = WorldCupService._api_recent_form_score(match, favorite_team, api_football_context)
+        if api_recent_form_score is not None:
+            recent_form_score = api_recent_form_score
+        api_squad_health_score = WorldCupService._api_squad_health_score(match, favorite_team, api_football_context)
+        if api_squad_health_score is not None:
+            squad_health_score = api_squad_health_score
         score = round(
-            recent_form_score * 0.25
+            recent_form_score * 0.27
             + motivation_score * 0.25
-            + squad_health_score * 0.20
+            + squad_health_score * 0.18
             + venue_fit_score * 0.15
-            + pedigree_score * 0.15
+            + pedigree_score * 0.08
+            + head_to_head_score * 0.07
         )
         support_level = "neutral"
-        if diagnostics.get("consensus_pass") and score >= 58:
+        if (
+            diagnostics.get("consensus_pass")
+            and diagnostics.get("pricing_signal") != "favorite_overpriced"
+            and score >= 60
+            and recent_form_score >= 52
+            and squad_health_score >= 48
+        ):
             support_level = "supportive"
-        elif diagnostics.get("pricing_signal") == "favorite_overpriced" or score <= 48:
+        elif (
+            diagnostics.get("pricing_signal") == "favorite_overpriced"
+            or score <= 48
+            or recent_form_score <= 46
+            or squad_health_score <= 44
+        ):
             support_level = "fragile"
         tags = WorldCupService._fundamental_summary_tags(
             match,
             favorite_team,
             home_context,
             away_context,
+            recent_form_score,
+            squad_health_score,
+            head_to_head_score,
             motivation_score,
             support_level,
+            api_football_context,
         )
         return {
             "score": score,
-            "data_quality": "partial" if home_context or away_context else "pending",
+            "data_quality": "enhanced" if api_football_context else "partial" if home_context or away_context else "pending",
             "support_level": support_level,
             "recent_form_score": recent_form_score,
             "motivation_score": motivation_score,
             "squad_health_score": squad_health_score,
             "venue_fit_score": venue_fit_score,
             "pedigree_score": pedigree_score,
+            "head_to_head_score": head_to_head_score,
             "summary_tags": tags,
         }
+
+    @staticmethod
+    def _head_to_head_score(match: Dict[str, Any], favorite_team: Optional[str], api_football_context: Dict[str, Any]) -> int:
+        if not favorite_team:
+            return 50
+        fixtures = api_football_context.get("head_to_head") or []
+        if not isinstance(fixtures, list) or not fixtures:
+            return 50
+        favorite_results = 0.0
+        counted = 0
+        for item in fixtures[:3]:
+            teams = (item.get("teams") or {})
+            home = ((teams.get("home") or {}).get("name") or "").strip()
+            away = ((teams.get("away") or {}).get("name") or "").strip()
+            goals = item.get("goals") or {}
+            home_goals = WorldCupService._to_int(goals.get("home"))
+            away_goals = WorldCupService._to_int(goals.get("away"))
+            if home_goals is None or away_goals is None:
+                continue
+            counted += 1
+            if home_goals == away_goals:
+                favorite_results += 0.5
+                continue
+            winner = home if home_goals > away_goals else away
+            if winner == favorite_team:
+                favorite_results += 1.0
+        if counted == 0:
+            return 50
+        return max(35, min(75, int(round(40 + favorite_results / counted * 30))))
 
     @staticmethod
     def _recent_form_score(
@@ -2661,6 +2931,29 @@ class WorldCupService:
         favorite_recent = home_recent if is_home_favorite else away_recent
         underdog_recent = away_recent if is_home_favorite else home_recent
         return WorldCupService._pair_advantage_to_score(favorite_recent, underdog_recent, base=50, scale=40)
+
+    @staticmethod
+    def _api_recent_form_score(
+        match: Dict[str, Any],
+        favorite_team: Optional[str],
+        api_football_context: Dict[str, Any],
+    ) -> Optional[int]:
+        if not favorite_team:
+            return None
+        recent_form = api_football_context.get("recent_form") or {}
+        home_strength = WorldCupService._api_team_recent_strength(
+            recent_form.get("home"),
+            match.get("home_team"),
+        )
+        away_strength = WorldCupService._api_team_recent_strength(
+            recent_form.get("away"),
+            match.get("away_team"),
+        )
+        if home_strength is None or away_strength is None:
+            return None
+        if favorite_team == match.get("home_team"):
+            return WorldCupService._pair_advantage_to_score(home_strength, away_strength, base=52, scale=34)
+        return WorldCupService._pair_advantage_to_score(away_strength, home_strength, base=52, scale=34)
 
     @staticmethod
     def _venue_fit_score(
@@ -2727,6 +3020,90 @@ class WorldCupService:
         return max(35, min(70, 50 + underdog_injuries * 4 - favorite_injuries * 5))
 
     @staticmethod
+    def _api_squad_health_score(
+        match: Dict[str, Any],
+        favorite_team: Optional[str],
+        api_football_context: Dict[str, Any],
+    ) -> Optional[int]:
+        if not favorite_team:
+            return None
+        impact = WorldCupService._injury_impact_by_team(match, api_football_context)
+        if not impact:
+            return None
+        favorite_impact = impact.get(favorite_team)
+        underdog_team = match.get("away_team") if favorite_team == match.get("home_team") else match.get("home_team")
+        underdog_impact = impact.get(underdog_team)
+        if favorite_impact is None or underdog_impact is None:
+            return None
+        score = 54 + underdog_impact * 4 - favorite_impact * 5
+        return max(30, min(76, int(round(score))))
+
+    @staticmethod
+    def _api_team_recent_strength(fixtures: Any, team_name: Optional[str]) -> Optional[float]:
+        if not isinstance(fixtures, list) or not fixtures or not team_name:
+            return None
+        points = 0.0
+        goal_bonus = 0.0
+        counted = 0
+        for fixture in fixtures[:6]:
+            teams = fixture.get("teams") or {}
+            home = ((teams.get("home") or {}).get("name") or "").strip()
+            away = ((teams.get("away") or {}).get("name") or "").strip()
+            goals = fixture.get("goals") or {}
+            home_goals = WorldCupService._to_int(goals.get("home"))
+            away_goals = WorldCupService._to_int(goals.get("away"))
+            if home_goals is None or away_goals is None:
+                continue
+            if WorldCupService._team_names_match(team_name, home):
+                team_goals = home_goals
+                opp_goals = away_goals
+            elif WorldCupService._team_names_match(team_name, away):
+                team_goals = away_goals
+                opp_goals = home_goals
+            else:
+                continue
+            counted += 1
+            if team_goals > opp_goals:
+                points += 3
+            elif team_goals == opp_goals:
+                points += 1
+            goal_bonus += max(min((team_goals - opp_goals) * 0.08, 0.24), -0.24)
+        if counted == 0:
+            return None
+        return max(0.0, min(1.0, points / (counted * 3) + goal_bonus / counted))
+
+    @staticmethod
+    def _injury_impact_by_team(match: Dict[str, Any], api_football_context: Dict[str, Any]) -> Dict[str, float]:
+        injuries = api_football_context.get("injuries") or []
+        if not isinstance(injuries, list):
+            return {}
+        impacts = {
+            str(match.get("home_team") or ""): 0.0,
+            str(match.get("away_team") or ""): 0.0,
+        }
+        for item in injuries:
+            team_name = (((item.get("team") or {}).get("name")) or "").strip()
+            matched_team = next((name for name in impacts if WorldCupService._team_names_match(team_name, name)), None)
+            if not matched_team:
+                continue
+            player = item.get("player") or {}
+            reason = str((player.get("reason") or item.get("reason") or "")).lower()
+            position = str((player.get("type") or player.get("position") or "")).lower()
+            weight = 1.0
+            if "goal" in position or "keeper" in position:
+                weight = 1.6
+            elif "def" in position or "back" in position:
+                weight = 1.25
+            elif "mid" in position:
+                weight = 1.15
+            elif "att" in position or "forw" in position or "striker" in position:
+                weight = 1.35
+            if any(token in reason for token in ("doubt", "question", "suspended")):
+                weight += 0.15
+            impacts[matched_team] += weight
+        return impacts
+
+    @staticmethod
     def _record_strength(summary: Optional[str]) -> Optional[float]:
         if not summary or not isinstance(summary, str):
             return None
@@ -2752,8 +3129,12 @@ class WorldCupService:
         favorite_team: Optional[str],
         home_context: Dict[str, Any],
         away_context: Dict[str, Any],
+        recent_form_score: int,
+        squad_health_score: int,
+        head_to_head_score: int,
         motivation_score: int,
         support_level: str,
+        api_football_context: Dict[str, Any],
     ) -> List[str]:
         tags: List[str] = []
         if favorite_team:
@@ -2772,10 +3153,31 @@ class WorldCupService:
             tags.append(
                 f"排名参考：主队 {home_context.get('rank') or '--'}，客队 {away_context.get('rank') or '--'}。"
             )
+        tags.append(
+            f"五要素量化：近况 {recent_form_score}，伤停 {squad_health_score}，交手 {head_to_head_score}。"
+        )
         if motivation_score >= 70:
             tags.append("淘汰赛阶段战意默认更强，盘口对强弱分层更值得尊重。")
         else:
             tags.append("当前仍以盘口数据为主，战意与伤停后续建议接入更细颗粒度数据源。")
+        injuries = api_football_context.get("injuries") or []
+        if isinstance(injuries, list) and injuries:
+            impacts = WorldCupService._injury_impact_by_team(match, api_football_context)
+            tags.append(
+                f"API-Football 已同步伤停，主队影响 {impacts.get(match.get('home_team'), 0.0):.1f}，"
+                f"客队影响 {impacts.get(match.get('away_team'), 0.0):.1f}。"
+            )
+        recent_form = api_football_context.get("recent_form") or {}
+        if isinstance(recent_form, dict) and (recent_form.get("home") or recent_form.get("away")):
+            home_strength = WorldCupService._api_team_recent_strength(recent_form.get("home"), match.get("home_team"))
+            away_strength = WorldCupService._api_team_recent_strength(recent_form.get("away"), match.get("away_team"))
+            if home_strength is not None and away_strength is not None:
+                tags.append(
+                    f"近6场强度：主队 {home_strength * 100:.0f}，客队 {away_strength * 100:.0f}。"
+                )
+        h2h = api_football_context.get("head_to_head") or []
+        if isinstance(h2h, list) and h2h:
+            tags.append(f"API-Football 已同步近端交手样本 {min(len(h2h), 3)} 场。")
         if support_level == "supportive":
             tags.append("现有基本面代理变量并未反驳盘口方向，可以视为顺势环境。")
         elif support_level == "fragile":
@@ -2800,6 +3202,10 @@ class WorldCupService:
 
         if line_delta is not None and line_delta >= 0.5:
             heat_flags.append("盘口跳档")
+        if fundamentals.get("recent_form_score", 50) < 48 and fundamentals.get("pedigree_score", 50) >= 60:
+            heat_flags.append("名气热")
+        if fundamentals.get("squad_health_score", 50) <= 44:
+            cold_flags.append("伤停冷")
         if fundamentals.get("support_level") == "fragile":
             cold_flags.append("基础面不稳")
 
@@ -2834,37 +3240,90 @@ class WorldCupService:
         return "当前没有形成足够清晰的下注优势，建议观望。"
 
     @staticmethod
-    def _probability_to_theoretical_line(favorite_prob: float) -> float:
-        if favorite_prob >= 0.72:
-            return 1.25
-        if favorite_prob >= 0.67:
-            return 1.0
-        if favorite_prob >= 0.62:
-            return 0.75
-        if favorite_prob >= 0.57:
-            return 0.5
-        if favorite_prob >= 0.53:
-            return 0.25
-        return 0.0
+    def _extract_h2h_probabilities(match: Dict[str, Any], h2h_market: Dict[str, Any]) -> Dict[str, Optional[float]]:
+        home_prob = next(
+            (option.get("probability") for option in h2h_market.get("options", []) if option.get("label") == match["home_team"]),
+            None,
+        )
+        away_prob = next(
+            (option.get("probability") for option in h2h_market.get("options", []) if option.get("label") == match["away_team"]),
+            None,
+        )
+        draw_prob = next(
+            (option.get("probability") for option in h2h_market.get("options", []) if str(option.get("label") or "") == "平局"),
+            None,
+        )
+        return {
+            "home": WorldCupService._to_float(home_prob),
+            "draw": WorldCupService._to_float(draw_prob) or 0.0,
+            "away": WorldCupService._to_float(away_prob),
+        }
 
     @staticmethod
-    def _line_to_cover_probabilities(line: float) -> tuple[float, float]:
-        abs_line = abs(line)
-        if abs_line >= 1.25:
-            favorite_prob = 0.68
-        elif abs_line >= 1.0:
-            favorite_prob = 0.64
-        elif abs_line >= 0.75:
-            favorite_prob = 0.60
-        elif abs_line >= 0.5:
-            favorite_prob = 0.56
-        elif abs_line >= 0.25:
-            favorite_prob = 0.53
+    def _derive_theoretical_market_line(
+        match: Dict[str, Any],
+        home_prob: float,
+        draw_prob: float,
+        away_prob: float,
+    ) -> Dict[str, Any]:
+        favorite_team = match["home_team"] if home_prob >= away_prob else match["away_team"]
+        favorite_win_prob = max(home_prob, away_prob)
+        candidates = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5]
+
+        best_line = 0.0
+        best_gap = float("inf")
+        best_cover = 0.5
+        for line in candidates:
+            favorite_cover = WorldCupService._favorite_cover_probability(line, favorite_win_prob, draw_prob)
+            gap = abs(favorite_cover - 0.5)
+            if gap < best_gap:
+                best_gap = gap
+                best_line = line
+                best_cover = favorite_cover
+
+        signed_line = -best_line if favorite_team == match["home_team"] else best_line
+        favorite_water = max(1.01, min(3.5, round(1 / max(best_cover, 0.01), 2)))
+        underdog_cover = max(0.01, min(0.99, 1 - best_cover))
+        underdog_water = max(1.01, min(3.5, round(1 / underdog_cover, 2)))
+        if favorite_team == match["home_team"]:
+            theoretical_home_prob = best_cover
+            theoretical_away_prob = underdog_cover
         else:
-            favorite_prob = 0.5
+            theoretical_home_prob = underdog_cover
+            theoretical_away_prob = best_cover
+        return {
+            "favorite_team": favorite_team,
+            "theoretical_line": signed_line,
+            "theoretical_home_prob": theoretical_home_prob,
+            "theoretical_away_prob": theoretical_away_prob,
+            "theoretical_home_water": favorite_water if favorite_team == match["home_team"] else underdog_water,
+            "theoretical_away_water": underdog_water if favorite_team == match["home_team"] else favorite_water,
+        }
+
+    @staticmethod
+    def _favorite_cover_probability(line: float, favorite_win_prob: float, draw_prob: float) -> float:
+        draw_prob = max(0.0, min(draw_prob, 0.45))
+        favorite_win_prob = max(0.01, min(favorite_win_prob, 0.95))
+        one_goal_share = WorldCupService._estimate_one_goal_share(favorite_win_prob, draw_prob)
+
         if line <= 0:
-            return favorite_prob, 1 - favorite_prob
-        return 1 - favorite_prob, favorite_prob
+            return min(0.99, favorite_win_prob + draw_prob * 0.5)
+        if line <= 0.25:
+            return min(0.99, favorite_win_prob + draw_prob * 0.25)
+        if line <= 0.5:
+            return favorite_win_prob
+        if line <= 0.75:
+            return max(0.01, favorite_win_prob - one_goal_share * favorite_win_prob * 0.5)
+        if line <= 1.0:
+            return max(0.01, favorite_win_prob * (1 - one_goal_share))
+        if line <= 1.25:
+            return max(0.01, favorite_win_prob * (1 - one_goal_share) - one_goal_share * favorite_win_prob * 0.1)
+        return max(0.01, favorite_win_prob * (1 - one_goal_share * 1.1))
+
+    @staticmethod
+    def _estimate_one_goal_share(favorite_win_prob: float, draw_prob: float) -> float:
+        estimated = 0.62 - max(favorite_win_prob - 0.5, 0) * 0.8 + draw_prob * 0.3
+        return max(0.32, min(0.78, estimated))
 
     @staticmethod
     def _format_theoretical_handicap(team: str, line: Optional[float]) -> Optional[str]:
@@ -2944,6 +3403,24 @@ class WorldCupService:
                 "signal_tier": "satellite",
                 "signal_grade": signal_grade,
                 "warning_message": warning_message,
+                "stake_pct": stake_pct,
+            }
+
+        if strategy == "主推方向":
+            if confidence >= 76 and book_probability >= 0.58:
+                stake_pct = 4.0
+                signal_grade = "strong"
+            elif confidence >= 70:
+                stake_pct = 3.0
+                signal_grade = "strong"
+            else:
+                stake_pct = 2.0
+                signal_grade = "caution"
+            return {
+                "decision": "bet",
+                "signal_tier": "core",
+                "signal_grade": signal_grade,
+                "warning_message": None if signal_grade == "strong" else "盘口与基本面大体同向，但还没有强到满配主仓。",
                 "stake_pct": stake_pct,
             }
 
@@ -3188,6 +3665,7 @@ class WorldCupService:
         )
         context = {
             "side": side,
+            "team_id": WorldCupService._to_int((competitor.get("team") or {}).get("id")),
             "rank": WorldCupService._to_int(rank),
             "overall_record": WorldCupService._extract_record_summary(records, {"overall", "all"}),
             "home_record": WorldCupService._extract_record_summary(records, {"home"}),

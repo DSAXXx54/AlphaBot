@@ -101,6 +101,10 @@ function trapTypeLabel(trapType?: string | null) {
   return '待判断';
 }
 
+function movementSignalLabel(signal?: string | null) {
+  return signal || '待同步';
+}
+
 function marketTitleLabel(title?: string) {
   if (!title) return '--';
   if (title === '胜平负') return '1X2';
@@ -417,10 +421,14 @@ export default function WorldCupMatchDetailPage() {
                   <CardTitle className="text-base">盘口诊断</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4 pt-5">
-                  <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     <div className="rounded-xl border border-border bg-background p-4">
                       <div className="text-xs text-muted-foreground">理论盘口</div>
                       <div className="mt-2 font-semibold">{match.market_diagnostics.theoretical_handicap || '--'}</div>
+                    </div>
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="text-xs text-muted-foreground">开盘盘口</div>
+                      <div className="mt-2 font-semibold">{match.market_diagnostics.opening_handicap || '--'}</div>
                     </div>
                     <div className="rounded-xl border border-border bg-background p-4">
                       <div className="text-xs text-muted-foreground">实际盘口</div>
@@ -438,12 +446,21 @@ export default function WorldCupMatchDetailPage() {
                         {match.market_diagnostics.actual_home_water?.toFixed(2) || '--'}
                       </div>
                     </div>
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="text-xs text-muted-foreground">盘口演化</div>
+                      <div className="mt-2 font-semibold">
+                        {movementSignalLabel(match.market_diagnostics.movement_signal)}
+                      </div>
+                    </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Badge variant={match.market_diagnostics.consensus_pass ? 'success' : 'outline'}>
                       共识 {match.market_diagnostics.consensus_score}
                     </Badge>
                     <Badge variant="secondary">{pricingSignalLabel(match.market_diagnostics.pricing_signal)}</Badge>
+                    <Badge variant="outline">
+                      盘变 {match.market_diagnostics.line_move_delta ?? '--'}
+                    </Badge>
                     <Badge variant="outline">
                       跳档 {match.market_diagnostics.line_delta ?? '--'}
                     </Badge>

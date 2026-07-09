@@ -135,8 +135,11 @@ export interface WorldCupMatchSummary {
 export interface WorldCupMarketDiagnostics {
   theoretical_handicap?: string | null;
   actual_handicap?: string | null;
+  opening_handicap?: string | null;
   theoretical_home_water?: number | null;
   theoretical_away_water?: number | null;
+  opening_home_water?: number | null;
+  opening_away_water?: number | null;
   actual_home_water?: number | null;
   actual_away_water?: number | null;
   favorite_team?: string | null;
@@ -144,6 +147,8 @@ export interface WorldCupMarketDiagnostics {
   underdog_side?: string | null;
   pricing_signal?: string | null;
   line_delta?: number | null;
+  line_move_delta?: number | null;
+  movement_signal?: string | null;
   consensus_score: number;
   consensus_pass: boolean;
   consensus_notes: string[];
@@ -158,6 +163,7 @@ export interface WorldCupFundamentals {
   squad_health_score: number;
   venue_fit_score: number;
   pedigree_score: number;
+  head_to_head_score?: number;
   summary_tags: string[];
 }
 

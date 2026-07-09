@@ -154,6 +154,20 @@ class Settings(BaseSettings):
     WORLDCUP_SCHEDULE_START_DATE: str = os.getenv("WORLDCUP_SCHEDULE_START_DATE", "2026-06-11")
     WORLDCUP_SCHEDULE_END_DATE: str = os.getenv("WORLDCUP_SCHEDULE_END_DATE", "2026-07-19")
     WORLDCUP_SCHEDULE_CACHE_SECONDS: int = int(os.getenv("WORLDCUP_SCHEDULE_CACHE_SECONDS", "300"))
+    WORLDCUP_API_FOOTBALL_ENABLED: bool = os.getenv("WORLDCUP_API_FOOTBALL_ENABLED", "False").lower() == "true"
+    WORLDCUP_API_FOOTBALL_BASE_URL: str = os.getenv("WORLDCUP_API_FOOTBALL_BASE_URL", "https://v3.football.api-sports.io")
+    WORLDCUP_API_FOOTBALL_KEY: str = os.getenv("WORLDCUP_API_FOOTBALL_KEY", "")
+    WORLDCUP_API_FOOTBALL_HOST: str = os.getenv("WORLDCUP_API_FOOTBALL_HOST", "v3.football.api-sports.io")
+    WORLDCUP_API_FOOTBALL_TIMEOUT: float = float(os.getenv("WORLDCUP_API_FOOTBALL_TIMEOUT", "10"))
+    WORLDCUP_API_FOOTBALL_CACHE_SECONDS: int = int(os.getenv("WORLDCUP_API_FOOTBALL_CACHE_SECONDS", "21600"))
+    WORLDCUP_ODDS_API_ENABLED: bool = os.getenv("WORLDCUP_ODDS_API_ENABLED", "False").lower() == "true"
+    WORLDCUP_ODDS_API_BASE_URL: str = os.getenv("WORLDCUP_ODDS_API_BASE_URL", "https://api.the-odds-api.com/v4")
+    WORLDCUP_ODDS_API_KEY: str = os.getenv("WORLDCUP_ODDS_API_KEY", "")
+    WORLDCUP_ODDS_API_SPORT: str = os.getenv("WORLDCUP_ODDS_API_SPORT", "soccer_fifa_world_cup")
+    WORLDCUP_ODDS_API_REGIONS: str = os.getenv("WORLDCUP_ODDS_API_REGIONS", "eu,uk,us")
+    WORLDCUP_ODDS_API_BOOKMAKERS: str = os.getenv("WORLDCUP_ODDS_API_BOOKMAKERS", "")
+    WORLDCUP_ODDS_API_CACHE_SECONDS: int = int(os.getenv("WORLDCUP_ODDS_API_CACHE_SECONDS", "300"))
+    WORLDCUP_ODDS_API_TIMEOUT: float = float(os.getenv("WORLDCUP_ODDS_API_TIMEOUT", "10"))
     
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
