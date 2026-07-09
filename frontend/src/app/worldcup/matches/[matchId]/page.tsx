@@ -47,8 +47,10 @@ function formatPercent(value?: number) {
 
 function strategyVariant(strategy?: string): 'success' | 'warning' | 'secondary' | 'outline' {
   if (strategy === '价值单') return 'success';
-  if (strategy === '一致性单') return 'warning';
+  if (strategy === '一致性单' || strategy === '机构共识') return 'warning';
+  if (strategy === '理论偏差') return 'secondary';
   if (strategy === '市场共识') return 'secondary';
+  if (strategy === '冷门预警') return 'destructive';
   return 'outline';
 }
 
@@ -77,6 +79,35 @@ function signalGradeLabel(signalGrade?: string | null) {
   if (signalGrade === 'caution') return '谨慎';
   if (signalGrade === 'high_risk') return '高风险';
   return '待定';
+}
+
+function decisionLabel(decision?: string) {
+  if (decision === 'bet') return '可执行';
+  if (decision === 'lean') return '偏向';
+  return '观望';
+}
+
+function pricingSignalLabel(signal?: string | null) {
+  if (signal === 'favorite_discounted') return '热门避险';
+  if (signal === 'favorite_overpriced') return '热门造热';
+  if (signal === 'balanced') return '定价均衡';
+  return '待判断';
+}
+
+function trapTypeLabel(trapType?: string | null) {
+  if (trapType === 'true_deep') return '真深盘';
+  if (trapType === 'fake_deep') return '假深盘';
+  if (trapType === 'true_shallow') return '真浅盘';
+  if (trapType === 'fake_shallow') return '假浅盘';
+  return '待判断';
+}
+
+function marketTitleLabel(title?: string) {
+  if (!title) return '--';
+  if (title === '胜平负') return '1X2';
+  if (title === '让球') return '亚洲让球';
+  if (title === '大小球') return '大小球';
+  return title;
 }
 
 function bankrollStatusVariant(status?: string): 'success' | 'warning' | 'destructive' | 'secondary' | 'outline' {
@@ -327,6 +358,7 @@ export default function WorldCupMatchDetailPage() {
                 </div>
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
+                <Badge variant="outline">{decisionLabel(match.featured_pick.decision)}</Badge>
                 <Badge variant={strategyVariant(match.featured_pick.strategy)}>
                   {match.featured_pick.strategy}
                 </Badge>
@@ -378,6 +410,98 @@ export default function WorldCupMatchDetailPage() {
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <Card className="rounded-2xl">
+                <CardHeader className="border-b border-border pb-4">
+                  <CardTitle className="text-base">盘口诊断</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-5">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="text-xs text-muted-foreground">理论盘口</div>
+                      <div className="mt-2 font-semibold">{match.market_diagnostics.theoretical_handicap || '--'}</div>
+                    </div>
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="text-xs text-muted-foreground">实际盘口</div>
+                      <div className="mt-2 font-semibold">{match.market_diagnostics.actual_handicap || '--'}</div>
+                    </div>
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="text-xs text-muted-foreground">理论主队水位</div>
+                      <div className="mt-2 font-semibold">
+                        {match.market_diagnostics.theoretical_home_water?.toFixed(2) || '--'}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="text-xs text-muted-foreground">实际主队水位</div>
+                      <div className="mt-2 font-semibold">
+                        {match.market_diagnostics.actual_home_water?.toFixed(2) || '--'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant={match.market_diagnostics.consensus_pass ? 'success' : 'outline'}>
+                      共识 {match.market_diagnostics.consensus_score}
+                    </Badge>
+                    <Badge variant="secondary">{pricingSignalLabel(match.market_diagnostics.pricing_signal)}</Badge>
+                    <Badge variant="outline">
+                      跳档 {match.market_diagnostics.line_delta ?? '--'}
+                    </Badge>
+                  </div>
+                  <div className="space-y-2">
+                    {match.market_diagnostics.consensus_notes.map((item) => (
+                      <div key={item} className="rounded-xl border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
+                        {item}
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl">
+                <CardHeader className="border-b border-border pb-4">
+                  <CardTitle className="text-base">基本面与热度</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-5">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="text-xs text-muted-foreground">基础面总分</div>
+                      <div className="mt-2 font-semibold">{match.fundamentals.score}</div>
+                    </div>
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="text-xs text-muted-foreground">盘口判型</div>
+                      <div className="mt-2 font-semibold">{trapTypeLabel(match.heat_profile.trap_type)}</div>
+                    </div>
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="text-xs text-muted-foreground">战意</div>
+                      <div className="mt-2 font-semibold">{match.fundamentals.motivation_score}</div>
+                    </div>
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="text-xs text-muted-foreground">数据完整度</div>
+                      <div className="mt-2 font-semibold">{match.fundamentals.data_quality || '--'}</div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {(match.heat_profile.heat_flags || []).map((item) => (
+                      <Badge key={item} variant="warning">{item}</Badge>
+                    ))}
+                    {(match.heat_profile.cold_flags || []).map((item) => (
+                      <Badge key={item} variant="secondary">{item}</Badge>
+                    ))}
+                    {(match.heat_profile.heat_flags || []).length === 0 && (match.heat_profile.cold_flags || []).length === 0 && (
+                      <Badge variant="outline">暂无异常热度</Badge>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    {match.fundamentals.summary_tags.map((item) => (
+                      <div key={item} className="rounded-xl border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
+                        {item}
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
             </div>
 
             <Card className="mt-4 rounded-2xl">
@@ -522,6 +646,55 @@ export default function WorldCupMatchDetailPage() {
                     </div>
                   )}
                 </div>
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-2xl border-border/80 bg-card/95">
+              <CardHeader className="border-b border-border pb-4">
+                <CardTitle className="text-base">机构共识明细</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-5">
+                {(match.bookmaker_quotes || []).length > 0 ? (
+                  <div className="space-y-3">
+                    {(match.bookmaker_quotes || []).map((quote) => (
+                      <div key={quote.bookmaker} className="rounded-2xl border border-border bg-background p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="font-medium">{quote.bookmaker}</div>
+                          <Badge variant="outline">机构</Badge>
+                        </div>
+                        <div className="mt-3 grid gap-3">
+                          {[quote.h2h_market, quote.spread_market, quote.totals_market]
+                            .filter((market) => Boolean(market))
+                            .map((market) => (
+                              <div key={`${quote.bookmaker}-${market?.market_type}`} className="rounded-xl border border-border/80 bg-muted/30 p-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-xs text-muted-foreground">{marketTitleLabel(market?.title)}</div>
+                                  {market?.line && (
+                                    <div className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                                      {market.line}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+                                  {(market?.options || []).map((option) => (
+                                    <div key={option.label} className="min-w-[108px] flex-1 rounded-xl border border-border bg-background px-3 py-2">
+                                      <div className="text-[11px] text-muted-foreground">{option.label}</div>
+                                      <div className="mt-1 font-semibold">{option.odds.toFixed(2)}</div>
+                                      <div className="text-[11px] text-muted-foreground">{formatPct(option.probability)}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
+                    当前还没有可展示的多机构报价明细。
+                  </div>
+                )}
               </CardContent>
             </Card>
 

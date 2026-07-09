@@ -98,6 +98,7 @@ export interface WorldCupMarket {
 }
 
 export interface WorldCupPick {
+  decision?: 'bet' | 'lean' | 'pass';
   bet_type: 'h2h' | 'asian_handicap' | 'totals';
   strategy: string;
   side: string;
@@ -131,6 +132,48 @@ export interface WorldCupMatchSummary {
   key_market: WorldCupMarket;
 }
 
+export interface WorldCupMarketDiagnostics {
+  theoretical_handicap?: string | null;
+  actual_handicap?: string | null;
+  theoretical_home_water?: number | null;
+  theoretical_away_water?: number | null;
+  actual_home_water?: number | null;
+  actual_away_water?: number | null;
+  favorite_team?: string | null;
+  favorite_side?: string | null;
+  underdog_side?: string | null;
+  pricing_signal?: string | null;
+  line_delta?: number | null;
+  consensus_score: number;
+  consensus_pass: boolean;
+  consensus_notes: string[];
+}
+
+export interface WorldCupFundamentals {
+  score: number;
+  data_quality?: string | null;
+  support_level?: string | null;
+  recent_form_score: number;
+  motivation_score: number;
+  squad_health_score: number;
+  venue_fit_score: number;
+  pedigree_score: number;
+  summary_tags: string[];
+}
+
+export interface WorldCupHeatProfile {
+  trap_type?: string | null;
+  heat_flags: string[];
+  cold_flags: string[];
+}
+
+export interface WorldCupBookmakerQuote {
+  bookmaker: string;
+  h2h_market?: WorldCupMarket | null;
+  spread_market?: WorldCupMarket | null;
+  totals_market?: WorldCupMarket | null;
+}
+
 export interface WorldCupMatchDetail extends WorldCupMatchSummary {
   markets: WorldCupMarket[];
   line_movement: Array<{
@@ -140,6 +183,10 @@ export interface WorldCupMatchDetail extends WorldCupMatchSummary {
     away_odds: number;
   }>;
   polymarket_probabilities: Record<string, number>;
+  bookmaker_quotes?: WorldCupBookmakerQuote[];
+  market_diagnostics: WorldCupMarketDiagnostics;
+  fundamentals: WorldCupFundamentals;
+  heat_profile: WorldCupHeatProfile;
   bankroll_bet?: {
     bet_type?: string;
     side?: string;
