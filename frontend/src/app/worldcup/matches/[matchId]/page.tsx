@@ -45,7 +45,7 @@ function formatPercent(value?: number) {
   return `${(value * 100).toFixed(1)}%`;
 }
 
-function strategyVariant(strategy?: string): 'success' | 'warning' | 'secondary' | 'outline' {
+function strategyVariant(strategy?: string): 'success' | 'warning' | 'secondary' | 'destructive' | 'outline' {
   if (strategy === '价值单') return 'success';
   if (strategy === '一致性单' || strategy === '机构共识') return 'warning';
   if (strategy === '市场共识') return 'secondary';
