@@ -147,6 +147,39 @@ GET    /api/v1/user/portfolio/health
 
 ## API 端点
 
+### 情绪专题
+
+当前情绪专题采用 `AKShare + 本地持久化` 的方案：
+
+- 每个 A 股交易日 `15:30` 自动抓取当日情绪池与市场数据
+- 每个交易日 `20:00` 自动补偿失败或缺失的数据
+- 支持手动补抓单个交易日
+
+相关接口：
+
+```text
+GET  /api/v1/sentiment/metrics?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+GET  /api/v1/sentiment/calendar?year=YYYY&month=M
+POST /api/v1/sentiment/sync/date
+```
+
+手动补抓请求示例：
+
+```json
+{
+  "trade_date": "2026-07-24",
+  "force": true
+}
+```
+
+运行前请确认后端依赖已安装：
+
+- `akshare`
+- `pandas`
+- `SQLAlchemy`
+
+如果这些依赖尚未安装，情绪专题服务会在实际同步时返回相应错误，但不会阻断应用其他模块启动。
+
 ### 股票搜索
 
 ```

@@ -51,6 +51,55 @@ export interface ApiResponse<T> {
   message?: string;
 }
 
+export interface SentimentMetricPoint {
+  date: string;
+  advanceRate: number;
+  breakoutRate: number;
+  marketHeat: number;
+  avgReturn: number;
+  maxReturn: number;
+  medianReturn: number;
+  firstBoardCount: number;
+  secondBoardCount: number;
+  breakoutCount: number;
+  turnoverAmount: number;
+  northboundAmount: number;
+  mainForceAmount: number;
+}
+
+export interface SentimentMetricsResponse {
+  startDate: string;
+  endDate: string;
+  points: SentimentMetricPoint[];
+  summary: {
+    totalTradingDays: number;
+    latestTradeDate?: string | null;
+    averageAdvanceRate: number;
+    averageBreakoutRate: number;
+  };
+}
+
+export interface SentimentCalendarDay {
+  date: string;
+  is_trading_day: boolean;
+  sync_status: 'non_trading' | 'success' | 'failed' | 'partial' | 'missing';
+  metrics_ready: boolean;
+}
+
+export interface SentimentCalendarResponse {
+  year: number;
+  month: number;
+  days: SentimentCalendarDay[];
+}
+
+export interface SentimentSyncDateResponse {
+  trade_date: string;
+  success: boolean;
+  synced_pools: string[];
+  metrics_ready: boolean;
+  message: string;
+}
+
 // 缓存统计信息
 export interface CacheStats {
   total_items: number;

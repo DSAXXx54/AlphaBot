@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { StockInfo, StockPriceHistory, AIAnalysis, ApiResponse, CacheStats, TaskInfo, TaskCreate, TaskUpdate, WorldCupMatchDetail, WorldCupMatchSummary, WorldCupOverview } from '../types';
+import { StockInfo, StockPriceHistory, AIAnalysis, ApiResponse, CacheStats, TaskInfo, TaskCreate, TaskUpdate, WorldCupMatchDetail, WorldCupMatchSummary, WorldCupOverview, SentimentCalendarResponse, SentimentMetricsResponse, SentimentSyncDateResponse } from '../types';
 import { SavedStock, LoginForm, RegisterForm, AuthResponse, User, McpStatus, McpTokenInfo, McpTokenCreatePayload, ExternalMcpServerInfo, AccountConnection, AccountConnectionCreatePayload, AccountConnectionUpdatePayload } from '../types/user';
 import { indexedDBCache } from './indexedDBCache';
 
@@ -342,6 +342,64 @@ export async function getWorldCupMatchDetail(
     return {
       success: false,
       error: '获取世界杯单场详情时出错',
+    };
+  }
+}
+
+export async function getSentimentMetrics(
+  startDate: string,
+  endDate: string,
+): Promise<ApiResponse<SentimentMetricsResponse>> {
+  try {
+    const response = await api.get<{success: boolean, data?: SentimentMetricsResponse, error?: string}>(
+      `/sentiment/metrics?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`
+    );
+    return response.data;
+  } catch (error) {
+    console.error('Error getting sentiment metrics:', error);
+    return {
+      success: false,
+      error: '获取情绪指标数据时出错',
+    };
+  }
+}
+
+export async function getSentimentCalendar(
+  year: number,
+  month: number,
+): Promise<ApiResponse<SentimentCalendarResponse>> {
+  try {
+    const response = await api.get<{success: boolean, data?: SentimentCalendarResponse, error?: string}>(
+      `/sentiment/calendar?year=${year}&month=${month}`
+    );
+    return response.data;
+  } catch (error) {
+    console.error('Error getting sentiment calendar:', error);
+    return {
+      success: false,
+      error: '获取情绪数据日历时出错',
+    };
+  }
+}
+
+export async function syncSentimentByDate(
+  tradeDate: string,
+  force: boolean = true,
+): Promise<ApiResponse<SentimentSyncDateResponse>> {
+  try {
+    const response = await api.post<{success: boolean, data?: SentimentSyncDateResponse, error?: string}>(
+      '/sentiment/sync/date',
+      {
+        trade_date: tradeDate,
+        force,
+      }
+    );
+    return response.data;
+  } catch (error: any) {
+    console.error('Error syncing sentiment date:', error);
+    return {
+      success: false,
+      error: error.response?.data?.error || '触发情绪数据抓取失败',
     };
   }
 }

@@ -9,15 +9,29 @@
   "worldcup_daily_refresh": {
     "task_id": "worldcup_daily_refresh",
     "interval": 86400,
-    "next_run": 1782111136.6146638,
+    "next_run": 1785200947.97064,
     "description": "worldcup_daily_refresh",
     "is_enabled": true
   },
   "worldcup_prekick_sync": {
     "task_id": "worldcup_prekick_sync",
     "interval": 300,
-    "next_run": 1782039512.747166,
+    "next_run": 1785123028.798448,
     "description": "worldcup_prekick_sync",
+    "is_enabled": true
+  },
+  "sentiment_daily_sync": {
+    "task_id": "sentiment_daily_sync",
+    "interval": 86400,
+    "next_run": 1785137400.0,
+    "description": "sentiment_daily_sync",
+    "is_enabled": true
+  },
+  "sentiment_daily_retry": {
+    "task_id": "sentiment_daily_retry",
+    "interval": 86400,
+    "next_run": 1785153600.0,
+    "description": "sentiment_daily_retry",
     "is_enabled": true
   }
 }

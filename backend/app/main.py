@@ -14,6 +14,7 @@ from app.db.session import engine, Base
 from app.services.scheduler_service import SchedulerService
 from app.services.telegram_poller import run_telegram_poller
 from app.services.worldcup_service import WorldCupService
+from app.services.sentiment_service import SentimentService
 from app.core.mcp_host import McpHostRegistry
 from app.middleware import RateLimitMiddleware, start_cleanup_task, stop_cleanup_task
 from app.middleware.logging import logging_middleware
@@ -25,6 +26,7 @@ from app.models.conversation import Conversation
 from app.models.portfolio import Position, TradeLog
 from app.models.alert import AlertRule, AlertTrigger
 from app.models.account import AccountConnection, AccountPosition, AccountTrade
+from app.models.sentiment import SentimentPoolRaw, SentimentDailyMetrics, SentimentSyncStatus
 
 # 初始化数据库
 from app.db.init_db import init_database
@@ -75,6 +77,22 @@ async def lifespan(app: FastAPI):
         next_run=time.time() + 15,
         description="worldcup_prekick_sync",
         task_id="worldcup_prekick_sync",
+    )
+
+    await scheduler.add_task(
+        SentimentService.sync_today,
+        interval=24 * 60 * 60,
+        next_run=next_run_at_shanghai(15, 30),
+        description="sentiment_daily_sync",
+        task_id="sentiment_daily_sync",
+    )
+
+    await scheduler.add_task(
+        SentimentService.retry_today_if_needed,
+        interval=24 * 60 * 60,
+        next_run=next_run_at_shanghai(20, 0),
+        description="sentiment_daily_retry",
+        task_id="sentiment_daily_retry",
     )
 
     asyncio.create_task(run_telegram_poller())
