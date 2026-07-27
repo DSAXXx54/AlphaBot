@@ -3,16 +3,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from statistics import median
 from typing import Any, Iterable
 
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.sentiment import SentimentDailyMetrics, SentimentPoolRaw, SentimentSyncStatus
 from app.schemas.sentiment import (
+    SentimentBackfillResponse,
     SentimentCalendarResponse,
     SentimentCalendarDay,
     SentimentMetricPoint,
@@ -35,26 +39,161 @@ class PoolFetchResult:
 class SentimentService:
     _trade_calendar_cache: list[date] | None = None
     _trade_calendar_loaded_at: datetime | None = None
+    _sync_lock_guard: asyncio.Lock = asyncio.Lock()
+    _sync_locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
     async def _run_sync(func, *args, **kwargs):
         return await asyncio.to_thread(func, *args, **kwargs)
 
-    @staticmethod
-    def _ak():
-        try:
-            import akshare as ak  # type: ignore
-        except ModuleNotFoundError as exc:
-            raise RuntimeError("akshare 未安装，无法执行情绪数据同步") from exc
-        return ak
+    @classmethod
+    async def _try_acquire_sync_lock(cls, trade_date: date) -> asyncio.Lock | None:
+        key = trade_date.isoformat()
+        async with cls._sync_lock_guard:
+            lock = cls._sync_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                cls._sync_locks[key] = lock
+            if lock.locked():
+                return None
+            await lock.acquire()
+            return lock
+
+    @classmethod
+    async def _release_sync_lock(cls, trade_date: date, lock: asyncio.Lock) -> None:
+        key = trade_date.isoformat()
+        async with cls._sync_lock_guard:
+            if lock.locked():
+                lock.release()
+            current = cls._sync_locks.get(key)
+            if current is lock and not lock.locked():
+                cls._sync_locks.pop(key, None)
 
     @staticmethod
-    def _pd():
+    def _mcp_client():
         try:
-            import pandas as pd  # type: ignore
+            from fastmcp import Client  # type: ignore
         except ModuleNotFoundError as exc:
-            raise RuntimeError("pandas 未安装，无法执行情绪数据同步") from exc
-        return pd
+            raise RuntimeError("fastmcp 未安装，无法执行 MCP 情绪数据同步") from exc
+        if not settings.TXMCP_API_KEY:
+            raise RuntimeError("未配置 TXMCP_API_KEY，无法执行 MCP 情绪数据同步")
+        config = {
+            "mcpServers": {
+                "txmcp": {
+                    "url": settings.TXMCP_HTTP_URL,
+                    "transport": "streamable-http",
+                    "headers": {
+                        "Authorization": f"Bearer {settings.TXMCP_API_KEY}",
+                    },
+                }
+            }
+        }
+        return Client(
+            config,
+            timeout=settings.TXMCP_TIMEOUT,
+            init_timeout=settings.TXMCP_TIMEOUT,
+        )
+
+    @staticmethod
+    def _extract_mcp_text(payload: Any) -> str:
+        content = getattr(payload, "content", None) or []
+        texts: list[str] = []
+        for item in content:
+            text = getattr(item, "text", None)
+            if text:
+                texts.append(text)
+        return "\n".join(texts)
+
+    @classmethod
+    def _extract_mcp_payload(cls, payload: Any) -> Any:
+        structured = getattr(payload, "structured_content", None)
+        if structured is None:
+            structured = getattr(payload, "data", None)
+        if isinstance(structured, dict) and structured.get("ok") is False:
+            error = structured.get("error") or {}
+            raise RuntimeError(str(error.get("message") or "MCP 工具返回失败"))
+        return structured if structured is not None else {"text": cls._extract_mcp_text(payload)}
+
+    @classmethod
+    async def _call_mcp_tool(cls, tool_name: str, params: dict[str, Any]) -> Any:
+        client = cls._mcp_client()
+        async with client:
+            result = await client.call_tool(tool_name, params)
+        return cls._extract_mcp_payload(result)
+
+    @staticmethod
+    def _screen_message(trade_date: date, keyword: str) -> str:
+        return f"{trade_date.isoformat()} {keyword}"
+
+    @classmethod
+    async def _query_screener_page(
+        cls,
+        message: str,
+        page_no: int = 1,
+        page_size: int = 6000,
+    ) -> dict[str, Any]:
+        payload = await cls._call_mcp_tool(
+            "tdx_screener",
+            {
+                "message": message,
+                "rang": "AG",
+                "pageNo": str(page_no),
+                "pageSize": str(page_size),
+            },
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError("tdx_screener 返回格式异常")
+        return payload
+
+    @classmethod
+    async def _query_screener_all(cls, message: str, page_size: int = 6000) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        page_no = 1
+        total = None
+        while total is None or len(rows) < total:
+            payload = await cls._query_screener_page(message, page_no=page_no, page_size=page_size)
+            meta = payload.get("meta") or {}
+            data = payload.get("data") or []
+            if not isinstance(data, list):
+                break
+            rows.extend([row for row in data if isinstance(row, dict)])
+            total = int(meta.get("total") or len(rows))
+            current_count = int(meta.get("currentPageCount") or len(data))
+            if current_count <= 0 or len(data) == 0 or len(rows) >= total:
+                break
+            page_no += 1
+        return rows
+
+    @staticmethod
+    def _market_to_setcode(market: Any, symbol: str) -> str:
+        market_text = str(market or "").strip()
+        if market_text in {"0", "1", "2"}:
+            return market_text
+        if symbol.startswith(("6", "5", "9")):
+            return "1"
+        if symbol.startswith(("4", "8")):
+            return "2"
+        return "0"
+
+    @staticmethod
+    def _first_matching_number(row: dict[str, Any], prefixes: tuple[str, ...]) -> float:
+        for key, value in row.items():
+            if any(str(key).startswith(prefix) for prefix in prefixes):
+                try:
+                    return float(str(value).replace(",", ""))
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+
+    @staticmethod
+    def _extract_meta_total(payload: Any) -> int:
+        if not isinstance(payload, dict):
+            return 0
+        meta = payload.get("meta") or {}
+        try:
+            return int(meta.get("total") or 0)
+        except (TypeError, ValueError):
+            return 0
 
     @classmethod
     async def get_trade_calendar(cls) -> list[date]:
@@ -67,11 +206,17 @@ class SentimentService:
             return cls._trade_calendar_cache
 
         def _load_calendar() -> list[date]:
-            ak = cls._ak()
+            try:
+                import akshare as ak  # type: ignore
+            except ModuleNotFoundError as exc:
+                raise RuntimeError("akshare 未安装，无法加载交易日历") from exc
+
             calendar_df = ak.tool_trade_date_hist_sina()
             column = "trade_date" if "trade_date" in calendar_df.columns else calendar_df.columns[0]
-            pd = cls._pd()
-            return [pd.to_datetime(value).date() for value in calendar_df[column].tolist()]
+            return [
+                value.date() if hasattr(value, "date") else datetime.strptime(str(value), "%Y-%m-%d").date()
+                for value in calendar_df[column].tolist()
+            ]
 
         try:
             cls._trade_calendar_cache = await cls._run_sync(_load_calendar)
@@ -155,6 +300,13 @@ class SentimentService:
             return default
 
     @classmethod
+    def _sanitize_number(cls, value: Any, default: float = 0.0) -> float:
+        parsed = cls._to_float(value, default)
+        if not math.isfinite(parsed):
+            return default
+        return parsed
+
+    @classmethod
     def _parse_board_height(cls, row: dict[str, Any]) -> int:
         for key in ("连续涨停天数", "连板数", "连续跌停天数"):
             if key in row:
@@ -190,10 +342,14 @@ class SentimentService:
     @classmethod
     def _normalize_pool_rows(cls, pool_type: str, trade_date: date, df: Any) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        if df is None or df.empty:
+        if df is None:
             return rows
-
-        records = df.to_dict(orient="records")
+        if isinstance(df, list):
+            records = df
+        elif getattr(df, "empty", False):
+            return rows
+        else:
+            records = df.to_dict(orient="records")
         for record in records:
             symbol = cls._parse_symbol(record)
             if not symbol:
@@ -217,25 +373,24 @@ class SentimentService:
 
     @classmethod
     async def _fetch_pool_df(cls, pool_type: str, trade_date: date) -> Any:
-        trade_date_str = trade_date.strftime("%Y%m%d")
         mapping = {
-            "zt": cls._ak().stock_zt_pool_em,
-            "dt": cls._ak().stock_zt_pool_dtgc_em,
-            "zbgc": cls._ak().stock_zt_pool_zbgc_em,
-            "zrzt": cls._ak().stock_zt_pool_previous_em,
-            "strong": cls._ak().stock_zt_pool_strong_em,
+            "zt": "涨停",
+            "dt": "跌停",
+            "zbgc": "炸板",
+            "zrzt": "昨日涨停",
+            "strong": "强势股",
         }
-        fetcher = mapping[pool_type]
-        return await cls._run_sync(fetcher, date=trade_date_str)
+        query = cls._screen_message(trade_date, mapping[pool_type])
+        rows = await cls._query_screener_all(query)
+        return rows
 
     @classmethod
     async def fetch_pool_data(cls, trade_date: date) -> list[PoolFetchResult]:
         results: list[PoolFetchResult] = []
         for pool_type in POOL_TYPES:
-            df = await cls._fetch_pool_df(pool_type, trade_date)
-            rows = cls._normalize_pool_rows(pool_type, trade_date, df)
+            raw_rows = await cls._fetch_pool_df(pool_type, trade_date)
+            rows = cls._normalize_pool_rows(pool_type, trade_date, raw_rows)
             results.append(PoolFetchResult(pool_type=pool_type, rows=rows))
-            await asyncio.sleep(1)
         return results
 
     @staticmethod
@@ -250,30 +405,49 @@ class SentimentService:
             db.add(status)
         return status
 
+    @staticmethod
+    def _dedupe_pool_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            symbol = row.get("symbol")
+            if not symbol:
+                continue
+            deduped[str(symbol)] = row
+        return list(deduped.values())
+
     @classmethod
     def persist_pool_data(cls, db: Session, trade_date: date, pool_type: str, rows: list[dict[str, Any]]) -> None:
-        for row in rows:
-            existing = (
-                db.query(SentimentPoolRaw)
-                .filter(
-                    SentimentPoolRaw.trade_date == trade_date,
-                    SentimentPoolRaw.pool_type == pool_type,
-                    SentimentPoolRaw.symbol == row["symbol"],
+        deduped_rows = cls._dedupe_pool_rows(rows)
+        if deduped_rows:
+            now = datetime.utcnow()
+            payload_rows = []
+            for row in deduped_rows:
+                payload_rows.append(
+                    {
+                        **row,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
                 )
-                .first()
+
+            insert_stmt = sqlite_insert(SentimentPoolRaw).values(payload_rows)
+            update_columns = {
+                "name": insert_stmt.excluded.name,
+                "board_height": insert_stmt.excluded.board_height,
+                "board_label": insert_stmt.excluded.board_label,
+                "first_limit_time": insert_stmt.excluded.first_limit_time,
+                "last_limit_time": insert_stmt.excluded.last_limit_time,
+                "limit_open_count": insert_stmt.excluded.limit_open_count,
+                "reason": insert_stmt.excluded.reason,
+                "payload_json": insert_stmt.excluded.payload_json,
+                "updated_at": now,
+            }
+            db.execute(
+                insert_stmt.on_conflict_do_update(
+                    index_elements=["trade_date", "pool_type", "symbol"],
+                    set_=update_columns,
+                )
             )
-            if existing:
-                existing.name = row["name"]
-                existing.board_height = row["board_height"]
-                existing.board_label = row["board_label"]
-                existing.first_limit_time = row["first_limit_time"]
-                existing.last_limit_time = row["last_limit_time"]
-                existing.limit_open_count = row["limit_open_count"]
-                existing.reason = row["reason"]
-                existing.payload_json = row["payload_json"]
-                existing.updated_at = datetime.utcnow()
-            else:
-                db.add(SentimentPoolRaw(**row))
 
         status = cls._get_or_create_status(db, trade_date, pool_type)
         status.status = "success"
@@ -290,21 +464,21 @@ class SentimentService:
 
     @classmethod
     async def _fetch_index_turnover_for_date(cls, symbol: str, trade_date: date) -> float:
+        setcode = "1" if symbol == "000001" else cls._market_to_setcode(None, symbol)
         try:
-            daily_df = await cls._run_sync(cls._ak().stock_zh_index_daily_em, symbol=symbol)
-            if daily_df is None or daily_df.empty:
+            payload = await cls._call_mcp_tool(
+                "tdx_quotes",
+                {
+                    "code": symbol,
+                    "setcode": setcode,
+                    "hasCalcInfo": "1",
+                    "hasCwInfo": "1",
+                },
+            )
+            if not isinstance(payload, dict):
                 return 0.0
-            pd = cls._pd()
-            working_df = daily_df.copy()
-            date_col = "date" if "date" in working_df.columns else ("日期" if "日期" in working_df.columns else None)
-            amount_col = "amount" if "amount" in working_df.columns else ("成交额" if "成交额" in working_df.columns else None)
-            if date_col is None or amount_col is None:
-                return 0.0
-            working_df[date_col] = pd.to_datetime(working_df[date_col]).dt.date
-            target = working_df[working_df[date_col] == trade_date]
-            if target.empty:
-                return 0.0
-            return cls._to_float(target.iloc[-1].get(amount_col), 0.0)
+            hq_info = payload.get("HQInfo") or {}
+            return cls._sanitize_number(hq_info.get("Amount"), 0.0)
         except Exception:
             return 0.0
 
@@ -313,100 +487,93 @@ class SentimentService:
         turnover_amount = 0.0
         main_force_amount = 0.0
         northbound_amount = 0.0
+        rising_stock_count = 0
 
         try:
-            today = datetime.now().date()
-            if trade_date == today:
-                ak = cls._ak()
-                spot_func = getattr(ak, "stock_zh_a_spot_em", None) or getattr(ak, "stock_zh_a_spot", None)
-                if spot_func is not None:
-                    spot_df = await cls._run_sync(spot_func)
-                    amount_column = "成交额" if "成交额" in spot_df.columns else None
-                    if amount_column:
-                        pd = cls._pd()
-                        turnover_amount = float(pd.to_numeric(spot_df[amount_column], errors="coerce").fillna(0).sum())
-            if turnover_amount <= 0:
-                sh_amount, sz_amount, bj_amount = await asyncio.gather(
-                    cls._fetch_index_turnover_for_date("sh000001", trade_date),
-                    cls._fetch_index_turnover_for_date("sz399001", trade_date),
-                    cls._fetch_index_turnover_for_date("bj899050", trade_date),
-                )
-                turnover_amount = sh_amount + sz_amount + bj_amount
+            turnover_rows = await cls._query_screener_all(cls._screen_message(trade_date, "市场总成交额"))
+            turnover_amount = sum(
+                cls._first_matching_number(row, ("成交额(元)",))
+                for row in turnover_rows
+            )
         except Exception as exc:
-            logger.warning("获取市场总成交额失败: %s", exc)
+            logger.warning("通过 MCP 获取市场总成交额失败，回退指数成交额求和: %s", exc)
+            sh_amount, sz_amount = await asyncio.gather(
+                cls._fetch_index_turnover_for_date("000001", trade_date),
+                cls._fetch_index_turnover_for_date("399001", trade_date),
+            )
+            turnover_amount = cls._sanitize_number(sh_amount + sz_amount)
 
         try:
-            flow_df = await cls._run_sync(cls._ak().stock_market_fund_flow)
-            if not flow_df.empty:
-                pd = cls._pd()
-                working_df = flow_df.copy()
-                if "日期" in working_df.columns:
-                    working_df["日期"] = pd.to_datetime(working_df["日期"]).dt.date
-                    target = working_df[working_df["日期"] == trade_date]
-                    if not target.empty:
-                        main_force_amount = float(target.iloc[-1].get("主力净流入-净额", 0) or 0)
+            flow_rows = await cls._query_screener_all(cls._screen_message(trade_date, "主力资金"))
+            main_force_amount = sum(
+                cls._first_matching_number(row, ("主力净额",))
+                for row in flow_rows
+            )
         except Exception as exc:
-            logger.warning("获取市场主力资金失败: %s", exc)
+            logger.warning("通过 MCP 获取市场主力资金失败: %s", exc)
 
         try:
-            north_df = await cls._run_sync(cls._ak().stock_hsgt_hist_em, symbol="北向资金")
-            if not north_df.empty:
-                pd = cls._pd()
-                working_df = north_df.copy()
-                if "日期" in working_df.columns:
-                    working_df["日期"] = pd.to_datetime(working_df["日期"]).dt.date
-                    target = working_df[working_df["日期"] == trade_date]
-                    if not target.empty:
-                        northbound_amount = float(target.iloc[-1].get("当日成交净买额", 0) or 0) * 100000000
+            north_rows = await cls._query_screener_all(cls._screen_message(trade_date, "北向资金"))
+            northbound_amount = sum(
+                cls._first_matching_number(row, ("陆股通成交额(元)",))
+                for row in north_rows
+            )
         except Exception as exc:
-            logger.warning("获取北向资金失败: %s", exc)
+            logger.warning("通过 MCP 获取北向资金失败: %s", exc)
+
+        try:
+            rising_payload = await cls._query_screener_page(
+                cls._screen_message(trade_date, "上涨家数"),
+                page_no=1,
+                page_size=1,
+            )
+            rising_stock_count = cls._extract_meta_total(rising_payload)
+        except Exception as exc:
+            logger.warning("通过 MCP 获取市场上涨家数失败: %s", exc)
 
         return {
-            "turnover_amount": turnover_amount,
-            "main_force_amount": main_force_amount,
-            "northbound_amount": northbound_amount,
+            "rising_stock_count": float(rising_stock_count),
+            "turnover_amount": cls._sanitize_number(turnover_amount),
+            "main_force_amount": cls._sanitize_number(main_force_amount),
+            "northbound_amount": cls._sanitize_number(northbound_amount),
         }
 
     @classmethod
     async def _fetch_returns_for_symbols(cls, symbols: Iterable[str], next_trade_date: date) -> list[float]:
         results: list[float] = []
         next_date_str = next_trade_date.strftime("%Y%m%d")
-        prev_date_str = (next_trade_date - timedelta(days=10)).strftime("%Y%m%d")
 
         for symbol in symbols:
             try:
-                hist_df = await cls._run_sync(
-                    cls._ak().stock_zh_a_hist,
-                    symbol=symbol,
-                    period="daily",
-                    start_date=prev_date_str,
-                    end_date=next_date_str,
-                    adjust="qfq",
+                payload = await cls._call_mcp_tool(
+                    "tdx_kline",
+                    {
+                        "code": symbol,
+                        "setcode": cls._market_to_setcode(None, symbol),
+                        "period": "4",
+                        "wantNum": "80",
+                        "tqFlag": "1",
+                    },
                 )
-                if hist_df is None or hist_df.empty:
+                if not isinstance(payload, dict):
                     continue
-                pd = cls._pd()
-                working_df = hist_df.copy()
-                date_col = "日期" if "日期" in working_df.columns else "date"
-                close_col = "收盘" if "收盘" in working_df.columns else "close"
-                working_df[date_col] = pd.to_datetime(working_df[date_col]).dt.date
-                working_df = working_df.sort_values(date_col)
-                target_idx = working_df.index[working_df[date_col] == next_trade_date]
-                if len(target_idx) == 0:
+                rows = payload.get("Rows") or payload.get("rows") or []
+                if not isinstance(rows, list) or not rows:
                     continue
-                idx = target_idx[0]
-                position = working_df.index.get_loc(idx)
+                position = next((idx for idx, row in enumerate(rows) if str(row.get("Data")) == next_date_str), -1)
                 if position == 0:
                     continue
-                prev_row = working_df.iloc[position - 1]
-                cur_row = working_df.iloc[position]
-                prev_close = float(prev_row[close_col])
-                cur_close = float(cur_row[close_col])
-                if prev_close:
+                if position < 0:
+                    continue
+                prev_row = rows[position - 1]
+                cur_row = rows[position]
+                prev_close = cls._sanitize_number(prev_row.get("Close"))
+                cur_close = cls._sanitize_number(cur_row.get("Close"))
+                if prev_close > 0:
                     results.append((cur_close / prev_close - 1) * 100)
             except Exception:
                 continue
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.05)
 
         return results
 
@@ -486,16 +653,28 @@ class SentimentService:
         metrics.avg_return = round(avg_return, 4)
         metrics.median_return = round(median_return, 4)
         metrics.max_return = round(max_return, 4)
-        metrics.turnover_amount = market_data["turnover_amount"]
-        metrics.northbound_amount = market_data["northbound_amount"]
-        metrics.main_force_amount = market_data["main_force_amount"]
+        metrics.rising_stock_count = int(cls._sanitize_number(market_data["rising_stock_count"]))
+        metrics.turnover_amount = cls._sanitize_number(market_data["turnover_amount"])
+        metrics.northbound_amount = cls._sanitize_number(market_data["northbound_amount"])
+        metrics.main_force_amount = cls._sanitize_number(market_data["main_force_amount"])
         metrics.computed_at = datetime.utcnow()
 
         return metrics
 
     @classmethod
     async def sync_sentiment_for_date(cls, db: Session, trade_date: date, force: bool = False) -> SentimentSyncDateResponse:
+        acquired_lock = await cls._try_acquire_sync_lock(trade_date)
+        if acquired_lock is None:
+            return SentimentSyncDateResponse(
+                trade_date=trade_date.isoformat(),
+                success=False,
+                synced_pools=[],
+                metrics_ready=False,
+                message="该交易日正在同步中，请稍后重试",
+            )
+
         if not await cls.is_trading_day(trade_date):
+            await cls._release_sync_lock(trade_date, acquired_lock)
             return SentimentSyncDateResponse(
                 trade_date=trade_date.isoformat(),
                 success=False,
@@ -504,62 +683,65 @@ class SentimentService:
                 message="所选日期不是交易日",
             )
 
-        existing_metrics = (
-            db.query(SentimentDailyMetrics)
-            .filter(SentimentDailyMetrics.trade_date == trade_date)
-            .first()
-        )
-        if existing_metrics is not None and not force:
-            statuses = (
-                db.query(SentimentSyncStatus)
-                .filter(SentimentSyncStatus.trade_date == trade_date)
-                .all()
+        try:
+            existing_metrics = (
+                db.query(SentimentDailyMetrics)
+                .filter(SentimentDailyMetrics.trade_date == trade_date)
+                .first()
             )
-            if statuses and all(status.status == "success" for status in statuses):
+            if existing_metrics is not None and not force:
+                statuses = (
+                    db.query(SentimentSyncStatus)
+                    .filter(SentimentSyncStatus.trade_date == trade_date)
+                    .all()
+                )
+                if statuses and all(status.status == "success" for status in statuses):
+                    return SentimentSyncDateResponse(
+                        trade_date=trade_date.isoformat(),
+                        success=True,
+                        synced_pools=[status.pool_type for status in statuses],
+                        metrics_ready=True,
+                        message="该交易日数据已存在",
+                    )
+
+            synced_pools: list[str] = []
+            for pool_type in POOL_TYPES:
+                status = cls._get_or_create_status(db, trade_date, pool_type)
+                status.status = "pending"
+                status.last_error = None
+                status.updated_at = datetime.utcnow()
+            db.commit()
+
+            try:
+                fetch_results = await cls.fetch_pool_data(trade_date)
+                for result in fetch_results:
+                    cls.persist_pool_data(db, trade_date, result.pool_type, result.rows)
+                    synced_pools.append(result.pool_type)
+                    db.commit()
+                await cls.compute_daily_metrics(db, trade_date)
+                db.commit()
                 return SentimentSyncDateResponse(
                     trade_date=trade_date.isoformat(),
                     success=True,
-                    synced_pools=[status.pool_type for status in statuses],
+                    synced_pools=synced_pools,
                     metrics_ready=True,
-                    message="该交易日数据已存在",
+                    message="同步完成",
                 )
-
-        synced_pools: list[str] = []
-        for pool_type in POOL_TYPES:
-            status = cls._get_or_create_status(db, trade_date, pool_type)
-            status.status = "pending"
-            status.last_error = None
-            status.updated_at = datetime.utcnow()
-        db.commit()
-
-        try:
-            fetch_results = await cls.fetch_pool_data(trade_date)
-            for result in fetch_results:
-                cls.persist_pool_data(db, trade_date, result.pool_type, result.rows)
-                synced_pools.append(result.pool_type)
+            except Exception as exc:
+                logger.exception("同步情绪数据失败: %s", exc)
+                db.rollback()
+                for pool_type in POOL_TYPES:
+                    cls.mark_pool_failed(db, trade_date, pool_type, str(exc))
                 db.commit()
-            await cls.compute_daily_metrics(db, trade_date)
-            db.commit()
-            return SentimentSyncDateResponse(
-                trade_date=trade_date.isoformat(),
-                success=True,
-                synced_pools=synced_pools,
-                metrics_ready=True,
-                message="同步完成",
-            )
-        except Exception as exc:
-            logger.exception("同步情绪数据失败: %s", exc)
-            db.rollback()
-            for pool_type in POOL_TYPES:
-                cls.mark_pool_failed(db, trade_date, pool_type, str(exc))
-            db.commit()
-            return SentimentSyncDateResponse(
-                trade_date=trade_date.isoformat(),
-                success=False,
-                synced_pools=synced_pools,
-                metrics_ready=False,
-                message=f"同步失败: {exc}",
-            )
+                return SentimentSyncDateResponse(
+                    trade_date=trade_date.isoformat(),
+                    success=False,
+                    synced_pools=synced_pools,
+                    metrics_ready=False,
+                    message=f"同步失败: {exc}",
+                )
+        finally:
+            await cls._release_sync_lock(trade_date, acquired_lock)
 
     @classmethod
     async def sync_today(cls, db: Session | None = None, trade_date: date | None = None, force: bool = False):
@@ -623,6 +805,52 @@ class SentimentService:
         return current
 
     @classmethod
+    async def list_recent_trading_days(cls, end_date: date, days: int) -> list[date]:
+        calendar = await cls.get_trade_calendar()
+        if calendar:
+            trading_days = [day for day in calendar if day <= end_date]
+            return trading_days[-days:]
+
+        results: list[date] = []
+        current = end_date
+        while len(results) < days:
+            if current.weekday() < 5:
+                results.append(current)
+            current -= timedelta(days=1)
+        results.reverse()
+        return results
+
+    @classmethod
+    async def backfill_recent_trading_days(
+        cls,
+        db: Session,
+        days: int,
+        end_date: date | None = None,
+        force: bool = False,
+    ) -> SentimentBackfillResponse:
+        target_end_date = end_date or datetime.now().date()
+        trade_dates = await cls.list_recent_trading_days(target_end_date, days)
+        results: list[SentimentSyncDateResponse] = []
+
+        for trade_date in trade_dates:
+            results.append(await cls.sync_sentiment_for_date(db, trade_date, force=force))
+
+        success_count = sum(1 for result in results if result.success and result.message != "该交易日数据已存在")
+        failed_count = sum(1 for result in results if not result.success)
+        skipped_count = sum(1 for result in results if result.success and result.message == "该交易日数据已存在")
+
+        return SentimentBackfillResponse(
+            requested_days=days,
+            end_date=target_end_date.isoformat(),
+            success_count=success_count,
+            failed_count=failed_count,
+            skipped_count=skipped_count,
+            trade_dates=[trade_date.isoformat() for trade_date in trade_dates],
+            results=results,
+            message=f"批量回补完成，共处理 {len(trade_dates)} 个交易日",
+        )
+
+    @classmethod
     async def get_metrics(cls, db: Session, start_date: date, end_date: date) -> SentimentMetricsResponse:
         rows = (
             db.query(SentimentDailyMetrics)
@@ -632,24 +860,24 @@ class SentimentService:
         )
         points: list[SentimentMetricPoint] = []
         for row in rows:
-            market_heat = (
-                row.up_limit_count * 1.6
-                - row.down_limit_count * 1.2
-                - row.break_limit_count * 0.8
-                + row.advance_rate * 0.35
+            up_limit_to_rising_ratio = (
+                row.up_limit_count / row.rising_stock_count * 100
+                if row.rising_stock_count
+                else 0.0
             )
             points.append(
                 SentimentMetricPoint(
                     date=row.trade_date.isoformat(),
                     advanceRate=round(row.advance_rate, 2),
                     breakoutRate=round(row.breakout_rate, 2),
-                    marketHeat=round(max(0.0, market_heat), 2),
+                    upLimitToRisingRatio=round(up_limit_to_rising_ratio, 2),
                     avgReturn=round(row.avg_return, 2),
                     maxReturn=round(row.max_return, 2),
                     medianReturn=round(row.median_return, 2),
                     firstBoardCount=row.first_board_count,
                     secondBoardCount=row.second_board_count,
                     breakoutCount=row.break_limit_count,
+                    risingStockCount=row.rising_stock_count,
                     turnoverAmount=round(row.turnover_amount / 100000000, 2),
                     northboundAmount=round(row.northbound_amount / 100000000, 2),
                     mainForceAmount=round(row.main_force_amount / 100000000, 2),

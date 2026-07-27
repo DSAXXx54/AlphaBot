@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { StockInfo, StockPriceHistory, AIAnalysis, ApiResponse, CacheStats, TaskInfo, TaskCreate, TaskUpdate, WorldCupMatchDetail, WorldCupMatchSummary, WorldCupOverview, SentimentCalendarResponse, SentimentMetricsResponse, SentimentSyncDateResponse } from '../types';
+import { StockInfo, StockPriceHistory, AIAnalysis, ApiResponse, CacheStats, TaskInfo, TaskCreate, TaskUpdate, WorldCupMatchDetail, WorldCupMatchSummary, WorldCupOverview, SentimentBackfillResponse, SentimentCalendarResponse, SentimentMetricsResponse, SentimentSyncDateResponse } from '../types';
 import { SavedStock, LoginForm, RegisterForm, AuthResponse, User, McpStatus, McpTokenInfo, McpTokenCreatePayload, ExternalMcpServerInfo, AccountConnection, AccountConnectionCreatePayload, AccountConnectionUpdatePayload } from '../types/user';
 import { indexedDBCache } from './indexedDBCache';
 
@@ -400,6 +400,30 @@ export async function syncSentimentByDate(
     return {
       success: false,
       error: error.response?.data?.error || '触发情绪数据抓取失败',
+    };
+  }
+}
+
+export async function backfillSentimentRecentDays(
+  days: number = 20,
+  force: boolean = false,
+  endDate?: string,
+): Promise<ApiResponse<SentimentBackfillResponse>> {
+  try {
+    const response = await api.post<{success: boolean, data?: SentimentBackfillResponse, error?: string}>(
+      '/sentiment/sync/backfill',
+      {
+        days,
+        force,
+        end_date: endDate,
+      }
+    );
+    return response.data;
+  } catch (error: any) {
+    console.error('Error backfilling sentiment days:', error);
+    return {
+      success: false,
+      error: error.response?.data?.error || '批量回补情绪数据失败',
     };
   }
 }

@@ -29,7 +29,7 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { cn } from '@/lib/utils';
-import { getSentimentCalendar, getSentimentMetrics, syncSentimentByDate } from '@/lib/api';
+import { backfillSentimentRecentDays, getSentimentCalendar, getSentimentMetrics, syncSentimentByDate } from '@/lib/api';
 import type { SentimentCalendarDay, SentimentMetricPoint, SentimentMetricsResponse } from '@/types';
 
 type MetricKey = 'ratio' | 'returnRate' | 'count' | 'amount';
@@ -75,11 +75,11 @@ const METRIC_CONFIGS: MetricConfig[] = [
     unit: '%',
     icon: Gauge,
     threshold: 6.5,
-    description: '观察市场核心情绪比率，重点标注超阈值日。',
+    description: '观察市场核心情绪比率，包含涨停总数占上涨家数比。',
     series: [
       { key: 'advanceRate', name: '涨停晋级率', color: '#3b82f6', isPrimary: true },
       { key: 'breakoutRate', name: '炸板率', color: '#f97316' },
-      { key: 'marketHeat', name: '承接热度', color: '#10b981' },
+      { key: 'upLimitToRisingRatio', name: '涨停占上涨比', color: '#10b981' },
     ],
   },
   {
@@ -124,6 +124,7 @@ const METRIC_CONFIGS: MetricConfig[] = [
 ];
 
 const PRESET_RANGES: PresetRange[] = [20, 40, 60, 120];
+const BACKFILL_DAY_OPTIONS = [5, 10, 20, 40, 60, 120];
 const WEEK_HEADERS = ['一', '二', '三', '四', '五', '六', '日'];
 
 function formatDate(date: Date) {
@@ -195,6 +196,23 @@ function getStatusTone(day: SentimentCalendarDay) {
   return 'border-border bg-background text-foreground';
 }
 
+function getStatusLabel(day: SentimentCalendarDay | null) {
+  if (!day) return '未抓取';
+  if (day.sync_status === 'success') return '已就绪';
+  if (day.sync_status === 'partial') return '部分缺失';
+  if (day.sync_status === 'failed') return '抓取失败';
+  if (day.sync_status === 'non_trading') return '休市';
+  return '未抓取';
+}
+
+function getStatusVariant(day: SentimentCalendarDay | null): 'success' | 'warning' | 'destructive' | 'outline' {
+  if (!day) return 'outline';
+  if (day.sync_status === 'success') return 'success';
+  if (day.sync_status === 'partial') return 'warning';
+  if (day.sync_status === 'failed') return 'destructive';
+  return 'outline';
+}
+
 export default function SentimentMetricsPrototype() {
   const [metricKey, setMetricKey] = useState<MetricKey>('ratio');
   const [activeRange, setActiveRange] = useState<PresetRange>(120);
@@ -203,10 +221,13 @@ export default function SentimentMetricsPrototype() {
   const [loading, setLoading] = useState(true);
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [calendarNotice, setCalendarNotice] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState(formatDate(new Date()));
+  const [backfillDays, setBackfillDays] = useState(20);
   const [activeMonth, setActiveMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -303,18 +324,48 @@ export default function SentimentMetricsPrototype() {
     () => calendarDays.find((day) => day.date === selectedDate) ?? null,
     [calendarDays, selectedDate]
   );
+  const monthTradingDays = useMemo(
+    () => calendarDays.filter((day) => day.is_trading_day).length,
+    [calendarDays]
+  );
+  const monthReadyDays = useMemo(
+    () => calendarDays.filter((day) => day.sync_status === 'success').length,
+    [calendarDays]
+  );
+  const monthPendingDays = useMemo(
+    () => calendarDays.filter((day) => day.is_trading_day && day.sync_status !== 'success').length,
+    [calendarDays]
+  );
 
   const handleSyncSelectedDate = async () => {
     if (!selectedDate) return;
     setSyncing(true);
     setCalendarError(null);
+    setCalendarNotice(null);
     const response = await syncSentimentByDate(selectedDate, true);
     if (!response.success) {
       setCalendarError(response.error || '触发抓取失败');
     } else {
+      setCalendarNotice(response.data?.message || `${selectedDate} 抓取完成`);
       await Promise.all([loadMetrics(), loadCalendar(activeMonth)]);
     }
     setSyncing(false);
+  };
+
+  const handleBackfillRecentDays = async () => {
+    setBackfilling(true);
+    setCalendarError(null);
+    setCalendarNotice(null);
+    const response = await backfillSentimentRecentDays(backfillDays, false, selectedDate || undefined);
+    if (!response.success || !response.data) {
+      setCalendarError(response.error || '批量回补失败');
+    } else {
+      setCalendarNotice(
+        `近${backfillDays}个交易日回补完成，新增 ${response.data.success_count} 天，跳过 ${response.data.skipped_count} 天，失败 ${response.data.failed_count} 天`
+      );
+      await Promise.all([loadMetrics(), loadCalendar(activeMonth)]);
+    }
+    setBackfilling(false);
   };
 
   const monthLabel = `${activeMonth.getFullYear()}年${activeMonth.getMonth() + 1}月`;
@@ -339,24 +390,11 @@ export default function SentimentMetricsPrototype() {
                 <span>共 {metrics?.summary.totalTradingDays ?? 0} 个交易日</span>
               </div>
               <Badge
-                variant={
-                  selectedCalendarDay?.sync_status === 'success'
-                    ? 'success'
-                    : selectedCalendarDay?.sync_status === 'partial'
-                      ? 'warning'
-                      : selectedCalendarDay?.sync_status === 'failed'
-                        ? 'destructive'
-                        : 'outline'
-                }
+                variant={getStatusVariant(selectedCalendarDay)}
               >
                 {selectedDate}
-                {selectedCalendarDay?.sync_status === 'success'
-                  ? ' 已就绪'
-                  : selectedCalendarDay?.sync_status === 'partial'
-                    ? ' 部分缺失'
-                    : selectedCalendarDay?.sync_status === 'failed'
-                      ? ' 抓取失败'
-                      : ' 未抓取'}
+                {' '}
+                {getStatusLabel(selectedCalendarDay)}
               </Badge>
               <Dialog open={calendarOpen} onOpenChange={setCalendarOpen}>
                 <DialogTrigger asChild>
@@ -365,105 +403,180 @@ export default function SentimentMetricsPrototype() {
                     数据日历
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="max-h-[85vh] max-w-[760px] overflow-hidden p-0">
+                <DialogContent className="max-h-[88vh] max-w-[1120px] overflow-hidden p-0">
                   <DialogHeader className="border-b border-border px-5 py-4">
-                    <DialogTitle>情绪数据日历</DialogTitle>
-                    <DialogDescription>交易日状态与单日补抓入口。</DialogDescription>
+                    <DialogTitle className="text-[18px] font-semibold tracking-[-0.02em] text-foreground">情绪数据日历</DialogTitle>
+                    <DialogDescription className="text-[13px] leading-6 text-muted-foreground">
+                      围绕一个交易月完成选日、补抓和状态检查。
+                    </DialogDescription>
                   </DialogHeader>
-                  <div className="flex max-h-[calc(85vh-88px)] flex-col overflow-hidden">
-                    <div className="border-b border-border px-5 py-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button variant="outline" size="sm" onClick={() => setActiveMonth(new Date(activeMonth.getFullYear(), activeMonth.getMonth() - 1, 1))}>
-                          上月
-                        </Button>
-                        <Badge variant="outline">{monthLabel}</Badge>
-                        <Button variant="outline" size="sm" onClick={() => setActiveMonth(new Date(activeMonth.getFullYear(), activeMonth.getMonth() + 1, 1))}>
-                          下月
-                        </Button>
-                        <Button variant="primary" size="sm" onClick={handleSyncSelectedDate} isLoading={syncing}>
-                          <RefreshCw className="mr-2 h-4 w-4" />
-                          抓取 {selectedDate || '所选日期'}
-                        </Button>
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                        <Badge variant="success">成功</Badge>
-                        <Badge variant="warning">部分缺失</Badge>
-                        <Badge variant="destructive">失败</Badge>
-                        <Badge variant="outline">未抓取</Badge>
+                  <div className="flex max-h-[calc(88vh-88px)] flex-col overflow-hidden">
+                    <div className="border-b border-border bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.10),transparent_42%),linear-gradient(180deg,rgba(248,250,252,0.9),rgba(248,250,252,0.4))] px-5 py-4">
+                      <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+                        <div>
+                          <div className="text-[10px] font-medium uppercase tracking-[0.28em] text-muted-foreground">当前选中</div>
+                          <div className="mt-2 flex flex-wrap items-center gap-3">
+                            <div className="text-[30px] font-semibold tracking-[-0.03em] text-foreground">{selectedDate || '--'}</div>
+                            <Badge variant={getStatusVariant(selectedCalendarDay)}>{getStatusLabel(selectedCalendarDay)}</Badge>
+                            <span className="text-[13px] leading-6 text-muted-foreground">
+                              {selectedCalendarDay?.is_trading_day ? '可作为单日重抓或批量回补截止日。' : '非交易日仅用于浏览状态。'}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3 xl:min-w-[420px]">
+                          <div className="rounded-2xl border border-border bg-background/80 px-4 py-3">
+                            <div className="text-[11px] text-muted-foreground">交易日</div>
+                            <div className="mt-1 text-[26px] font-semibold tracking-[-0.03em] text-foreground">{monthTradingDays}</div>
+                          </div>
+                          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 px-4 py-3">
+                            <div className="text-[11px] text-muted-foreground">已就绪</div>
+                            <div className="mt-1 text-[26px] font-semibold tracking-[-0.03em] text-emerald-700">{monthReadyDays}</div>
+                          </div>
+                          <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3">
+                            <div className="text-[11px] text-muted-foreground">待补抓</div>
+                            <div className="mt-1 text-[26px] font-semibold tracking-[-0.03em] text-amber-700">{monthPendingDays}</div>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                    <div className="flex-1 overflow-y-auto px-5 py-4">
-                      {calendarError && (
-                        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                          {calendarError}
+
+                    <div className="grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[1fr_320px]">
+                      <div className="flex min-h-0 flex-col border-b border-border bg-background lg:border-b-0 lg:border-r">
+                        <div className="border-b border-border px-5 py-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <div className="text-[10px] font-medium uppercase tracking-[0.28em] text-muted-foreground">交易月历</div>
+                              <div className="mt-1 text-[20px] font-semibold tracking-[-0.02em] text-foreground">{monthLabel}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button variant="outline" size="sm" onClick={() => setActiveMonth(new Date(activeMonth.getFullYear(), activeMonth.getMonth() - 1, 1))}>
+                                上月
+                              </Button>
+                              <Button variant="outline" size="sm" onClick={() => setActiveMonth(new Date(activeMonth.getFullYear(), activeMonth.getMonth() + 1, 1))}>
+                                下月
+                              </Button>
+                            </div>
+                          </div>
                         </div>
-                      )}
-                      <div className="mb-4 rounded-lg border border-border bg-background px-4 py-3">
-                        <div className="text-xs text-muted-foreground">当前选中</div>
-                        <div className="mt-1 flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-semibold text-foreground">{selectedDate || '--'}</span>
-                          {selectedCalendarDay && (
-                            <Badge
-                              variant={
-                                selectedCalendarDay.sync_status === 'success'
-                                  ? 'success'
-                                  : selectedCalendarDay.sync_status === 'partial'
-                                    ? 'warning'
-                                    : selectedCalendarDay.sync_status === 'failed'
-                                      ? 'destructive'
-                                      : 'outline'
-                              }
-                            >
-                              {selectedCalendarDay.sync_status === 'success'
-                                ? '已就绪'
-                                : selectedCalendarDay.sync_status === 'partial'
-                                  ? '部分缺失'
-                                  : selectedCalendarDay.sync_status === 'failed'
-                                    ? '抓取失败'
-                                    : selectedCalendarDay.sync_status === 'non_trading'
-                                      ? '休市'
-                                      : '未抓取'}
-                            </Badge>
+                        <div className="flex-1 overflow-y-auto px-5 py-4">
+                          {calendarLoading && (
+                            <div className="rounded-2xl border border-dashed border-border px-4 py-8 text-sm text-muted-foreground">
+                              正在加载日历...
+                            </div>
+                          )}
+                          {!calendarLoading && (
+                            <div className="rounded-3xl border border-border bg-muted/10 p-4">
+                              <div className="mb-3 grid grid-cols-7 gap-2">
+                                {WEEK_HEADERS.map((header) => (
+                                  <div key={header} className="px-2 text-center text-[11px] font-medium tracking-[0.08em] text-muted-foreground">
+                                    {header}
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="grid grid-cols-7 gap-2">
+                                {calendarCells.map((day, index) => (
+                                  <div key={day ? day.date : `blank-${index}`} className="min-h-[6rem]">
+                                    {day ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => day.is_trading_day && setSelectedDate(day.date)}
+                                        className={cn(
+                                          'flex h-full w-full flex-col rounded-2xl border px-3 py-3 text-left transition-all',
+                                          getStatusTone(day),
+                                          selectedDate === day.date && day.is_trading_day ? 'border-primary shadow-[0_0_0_2px_rgba(59,130,246,0.18)]' : '',
+                                          !day.is_trading_day ? 'cursor-not-allowed opacity-70' : 'hover:-translate-y-0.5 hover:border-primary/50'
+                                        )}
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="text-[15px] font-semibold tracking-[-0.01em]">{parseDate(day.date).getDate()}</span>
+                                          <span
+                                            className={cn(
+                                              'h-2.5 w-2.5 rounded-full',
+                                              day.sync_status === 'success'
+                                                ? 'bg-emerald-500'
+                                                : day.sync_status === 'partial'
+                                                  ? 'bg-amber-500'
+                                                  : day.sync_status === 'failed'
+                                                    ? 'bg-red-500'
+                                                    : day.sync_status === 'non_trading'
+                                                      ? 'bg-muted-foreground/40'
+                                                      : 'bg-slate-300'
+                                            )}
+                                          />
+                                        </div>
+                                        <span className="mt-3 line-clamp-2 text-[11px] font-medium leading-4">{getStatusLabel(day)}</span>
+                                        <span className="mt-auto pt-3 text-[10px] tracking-[0.04em] text-muted-foreground">
+                                          {day.is_trading_day ? (selectedDate === day.date ? '当前选中' : '点击查看') : '休市'}
+                                        </span>
+                                      </button>
+                                    ) : (
+                                      <div className="h-full rounded-2xl" />
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
                           )}
                         </div>
                       </div>
-                      <div className="grid grid-cols-7 gap-2">
-                        {WEEK_HEADERS.map((header) => (
-                          <div key={header} className="px-2 text-center text-xs font-medium text-muted-foreground">
-                            {header}
-                          </div>
-                        ))}
-                        {calendarLoading && (
-                          <div className="col-span-7 rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
-                            正在加载日历...
+
+                      <div className="overflow-y-auto bg-muted/10 px-5 py-4">
+                        {calendarError && (
+                          <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] leading-6 text-red-700">
+                            {calendarError}
                           </div>
                         )}
-                        {!calendarLoading && calendarCells.map((day, index) => (
-                          <div key={day ? day.date : `blank-${index}`} className="min-h-[3.75rem]">
-                            {day ? (
-                              <button
-                                type="button"
-                                onClick={() => day.is_trading_day && setSelectedDate(day.date)}
-                                className={cn(
-                                  'flex h-full w-full flex-col rounded-lg border px-2 py-1.5 text-left transition-colors',
-                                  getStatusTone(day),
-                                  selectedDate === day.date && day.is_trading_day ? 'ring-2 ring-primary' : '',
-                                  !day.is_trading_day ? 'cursor-not-allowed opacity-70' : 'hover:border-primary/50'
-                                )}
-                              >
-                                <span className="text-sm font-semibold">{parseDate(day.date).getDate()}</span>
-                                <span className="mt-1 line-clamp-1 text-[10px]">
-                                  {day.sync_status === 'success' ? '已就绪' :
-                                    day.sync_status === 'partial' ? '部分缺失' :
-                                    day.sync_status === 'failed' ? '抓取失败' :
-                                    day.sync_status === 'non_trading' ? '休市' : '未抓取'}
-                                </span>
-                              </button>
-                            ) : (
-                              <div className="h-full rounded-lg" />
-                            )}
+                        {calendarNotice && (
+                          <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13px] leading-6 text-emerald-700">
+                            {calendarNotice}
                           </div>
-                        ))}
+                        )}
+                        <div className="space-y-4">
+                          <div className="rounded-2xl border border-border bg-background p-4">
+                            <div className="text-[15px] font-semibold tracking-[-0.01em] text-foreground">批量回补</div>
+                            <div className="mt-2 text-[13px] leading-6 text-muted-foreground">
+                              以当前选中日期为截止日，只补缺失数据，不重复覆盖已完成的交易日。
+                            </div>
+                            <div className="mt-4 grid grid-cols-3 gap-2">
+                              {BACKFILL_DAY_OPTIONS.map((days) => (
+                                <Button
+                                  key={days}
+                                  variant={backfillDays === days ? 'primary' : 'outline'}
+                                  size="sm"
+                                  onClick={() => setBackfillDays(days)}
+                                  className="px-0 text-[12px] font-medium"
+                                >
+                                  {days}日
+                                </Button>
+                              ))}
+                            </div>
+                            <Button className="mt-4 w-full" variant="outline" onClick={handleBackfillRecentDays} isLoading={backfilling}>
+                              <RefreshCw className="mr-2 h-4 w-4" />
+                              回补近{backfillDays}个交易日
+                            </Button>
+                          </div>
+
+                          <div className="rounded-2xl border border-border bg-background p-4">
+                            <div className="text-[15px] font-semibold tracking-[-0.01em] text-foreground">单日重抓</div>
+                            <div className="mt-2 text-[13px] leading-6 text-muted-foreground">
+                              对当前选中交易日重新拉取池子数据，并覆盖当天聚合指标。
+                            </div>
+                            <Button className="mt-4 w-full" variant="primary" onClick={handleSyncSelectedDate} isLoading={syncing}>
+                              <RefreshCw className="mr-2 h-4 w-4" />
+                              重新抓取 {selectedDate || '所选日期'}
+                            </Button>
+                          </div>
+
+                          <div className="rounded-2xl border border-border bg-background p-4">
+                            <div className="text-[15px] font-semibold tracking-[-0.01em] text-foreground">状态图例</div>
+                            <div className="mt-3 grid gap-2 text-[12px] leading-5 text-muted-foreground">
+                              <div className="flex items-center justify-between"><span>成功</span><Badge variant="success">已就绪</Badge></div>
+                              <div className="flex items-center justify-between"><span>部分缺失</span><Badge variant="warning">部分缺失</Badge></div>
+                              <div className="flex items-center justify-between"><span>失败</span><Badge variant="destructive">抓取失败</Badge></div>
+                              <div className="flex items-center justify-between"><span>未抓取</span><Badge variant="outline">未抓取</Badge></div>
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>

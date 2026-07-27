@@ -49,7 +49,30 @@ def _ensure_users_table_columns() -> None:
             connection.execute(text(update_sql))
 
 
+def _ensure_sentiment_table_columns() -> None:
+    """轻量补齐情绪表新增列，兼容当前项目未使用 Alembic 的部署方式。"""
+    inspector = inspect(engine)
+    if "sentiment_daily_metrics" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("sentiment_daily_metrics")}
+    ddl_statements = []
+
+    if "rising_stock_count" not in existing_columns:
+        ddl_statements.append(
+            "ALTER TABLE sentiment_daily_metrics ADD COLUMN rising_stock_count INTEGER DEFAULT 0 NOT NULL"
+        )
+
+    if not ddl_statements:
+        return
+
+    with engine.begin() as connection:
+        for ddl in ddl_statements:
+            connection.execute(text(ddl))
+
+
 def init_database():
     """初始化数据库，创建所有表"""
     Base.metadata.create_all(bind=engine)
     _ensure_users_table_columns()
+    _ensure_sentiment_table_columns()

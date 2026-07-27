@@ -7,13 +7,14 @@ class SentimentMetricPoint(BaseModel):
     date: str
     advanceRate: float
     breakoutRate: float
-    marketHeat: float
+    upLimitToRisingRatio: float
     avgReturn: float
     maxReturn: float
     medianReturn: float
     firstBoardCount: int
     secondBoardCount: int
     breakoutCount: int
+    risingStockCount: int
     turnoverAmount: float
     northboundAmount: float
     mainForceAmount: float
@@ -49,6 +50,23 @@ class SentimentSyncDateResponse(BaseModel):
     success: bool
     synced_pools: list[str]
     metrics_ready: bool
+    message: str
+
+
+class SentimentBackfillRequest(BaseModel):
+    days: int = Field(default=20, ge=1, le=120)
+    end_date: date | None = None
+    force: bool = Field(default=False)
+
+
+class SentimentBackfillResponse(BaseModel):
+    requested_days: int
+    end_date: str
+    success_count: int
+    failed_count: int
+    skipped_count: int
+    trade_dates: list[str]
+    results: list[SentimentSyncDateResponse]
     message: str
 
 

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import check_usage_limit
 from app.db.session import get_db
-from app.schemas.sentiment import SentimentSyncDateRequest
+from app.schemas.sentiment import SentimentBackfillRequest, SentimentSyncDateRequest
 from app.services.sentiment_service import SentimentService
 from app.utils.response import api_response
 
@@ -49,5 +49,22 @@ async def sync_sentiment_by_date(
 ):
     result = await SentimentService.sync_sentiment_for_date(db, payload.trade_date, force=payload.force)
     if not result.success:
+        return api_response(success=False, data=result.model_dump(), error=result.message)
+    return api_response(data=result.model_dump())
+
+
+@router.post("/sync/backfill", response_model=dict)
+async def backfill_sentiment_recent_days(
+    payload: SentimentBackfillRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(check_usage_limit),
+):
+    result = await SentimentService.backfill_recent_trading_days(
+        db,
+        days=payload.days,
+        end_date=payload.end_date,
+        force=payload.force,
+    )
+    if result.failed_count > 0:
         return api_response(success=False, data=result.model_dump(), error=result.message)
     return api_response(data=result.model_dump())

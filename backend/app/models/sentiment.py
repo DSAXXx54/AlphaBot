@@ -44,6 +44,7 @@ class SentimentDailyMetrics(Base):
     avg_return = Column(Float, default=0.0, nullable=False)
     median_return = Column(Float, default=0.0, nullable=False)
     max_return = Column(Float, default=0.0, nullable=False)
+    rising_stock_count = Column(Integer, default=0, nullable=False)
     turnover_amount = Column(Float, default=0.0, nullable=False)
     northbound_amount = Column(Float, default=0.0, nullable=False)
     main_force_amount = Column(Float, default=0.0, nullable=False)

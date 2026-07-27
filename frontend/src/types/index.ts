@@ -55,13 +55,14 @@ export interface SentimentMetricPoint {
   date: string;
   advanceRate: number;
   breakoutRate: number;
-  marketHeat: number;
+  upLimitToRisingRatio: number;
   avgReturn: number;
   maxReturn: number;
   medianReturn: number;
   firstBoardCount: number;
   secondBoardCount: number;
   breakoutCount: number;
+  risingStockCount: number;
   turnoverAmount: number;
   northboundAmount: number;
   mainForceAmount: number;
@@ -97,6 +98,17 @@ export interface SentimentSyncDateResponse {
   success: boolean;
   synced_pools: string[];
   metrics_ready: boolean;
+  message: string;
+}
+
+export interface SentimentBackfillResponse {
+  requested_days: number;
+  end_date: string;
+  success_count: number;
+  failed_count: number;
+  skipped_count: number;
+  trade_dates: string[];
+  results: SentimentSyncDateResponse[];
   message: string;
 }
 
