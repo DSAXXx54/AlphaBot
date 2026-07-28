@@ -143,9 +143,6 @@ class Settings(BaseSettings):
     # 外部 MCP / TrendRadar 等 HTTP 接入（可选）
     TRENDRADAR_MCP_HTTP_URL: str = os.getenv("TRENDRADAR_MCP_HTTP_URL", "")
     TRENDRADAR_MCP_API_KEY: str = os.getenv("TRENDRADAR_MCP_API_KEY", "")
-    TXMCP_HTTP_URL: str = os.getenv("TXMCP_HTTP_URL", "https://txmcp.tdx.com.cn:3001/txmcp")
-    TXMCP_API_KEY: str = os.getenv("TXMCP_API_KEY", "")
-    TXMCP_TIMEOUT: float = float(os.getenv("TXMCP_TIMEOUT", "45"))
 
     # World Cup / Polymarket 配置
     WORLDCUP_POLYMARKET_ENABLED: bool = os.getenv("WORLDCUP_POLYMARKET_ENABLED", "True").lower() == "true"
