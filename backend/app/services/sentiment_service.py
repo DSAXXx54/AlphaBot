@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta
 from statistics import median
 from typing import Any, Iterable
 
+import httpx
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,7 @@ from app.schemas.sentiment import (
     SentimentMetricsResponse,
     SentimentSyncDateResponse,
 )
+from app.services.data_sources.tdx import TDXDataSource
 
 logger = logging.getLogger("uvicorn")
 
@@ -41,6 +43,7 @@ class SentimentService:
     _trade_calendar_loaded_at: datetime | None = None
     _sync_lock_guard: asyncio.Lock = asyncio.Lock()
     _sync_locks: dict[str, asyncio.Lock] = {}
+    _tdx_source: TDXDataSource | None = None
 
     @staticmethod
     async def _run_sync(func, *args, **kwargs):
@@ -70,130 +73,78 @@ class SentimentService:
                 cls._sync_locks.pop(key, None)
 
     @staticmethod
-    def _mcp_client():
+    def _load_akshare():
         try:
-            from fastmcp import Client  # type: ignore
+            import akshare as ak  # type: ignore
         except ModuleNotFoundError as exc:
-            raise RuntimeError("fastmcp 未安装，无法执行 MCP 情绪数据同步") from exc
-        if not settings.TXMCP_API_KEY:
-            raise RuntimeError("未配置 TXMCP_API_KEY，无法执行 MCP 情绪数据同步")
-        config = {
-            "mcpServers": {
-                "txmcp": {
-                    "url": settings.TXMCP_HTTP_URL,
-                    "transport": "streamable-http",
-                    "headers": {
-                        "Authorization": f"Bearer {settings.TXMCP_API_KEY}",
-                    },
-                }
-            }
+            raise RuntimeError("akshare 未安装，无法执行情绪数据同步") from exc
+        return ak
+
+    @staticmethod
+    def _format_pool_date(trade_date: date) -> str:
+        return trade_date.strftime("%Y%m%d")
+
+    @classmethod
+    def _get_tdx_source(cls) -> TDXDataSource:
+        if cls._tdx_source is None:
+            cls._tdx_source = TDXDataSource()
+        return cls._tdx_source
+
+    @classmethod
+    async def _request_tdx_http(cls, path: str, params: dict[str, Any]) -> Any:
+        base_url = settings.TDX_API_BASE_URL.strip().rstrip("/")
+        if not base_url:
+            raise RuntimeError("未配置 TDX_API_BASE_URL，无法获取 TDX 行情数据")
+
+        async with httpx.AsyncClient(timeout=settings.TDX_TIMEOUT) as client:
+            response = await client.get(f"{base_url}{path}", params=params)
+            response.raise_for_status()
+            payload = response.json()
+
+        if payload.get("code") != 0:
+            raise RuntimeError(str(payload.get("message") or "TDX HTTP 请求失败"))
+        return payload.get("data")
+
+    @classmethod
+    def _pick_dataframe_date_row(cls, df: Any, trade_date: date) -> dict[str, Any] | None:
+        if getattr(df, "empty", False):
+            logger.warning("情绪数据日期匹配失败: DataFrame 为空, trade_date=%s", trade_date.isoformat())
+            return None
+
+        target_dates = {
+            trade_date.isoformat(),
+            trade_date.strftime("%Y-%m-%d"),
+            trade_date.strftime("%Y%m%d"),
         }
-        return Client(
-            config,
-            timeout=settings.TXMCP_TIMEOUT,
-            init_timeout=settings.TXMCP_TIMEOUT,
-        )
+        records = df.to_dict(orient="records")
+        date_keys = ("日期", "交易日期", "trade_date", "date")
 
-    @staticmethod
-    def _extract_mcp_text(payload: Any) -> str:
-        content = getattr(payload, "content", None) or []
-        texts: list[str] = []
-        for item in content:
-            text = getattr(item, "text", None)
-            if text:
-                texts.append(text)
-        return "\n".join(texts)
-
-    @classmethod
-    def _extract_mcp_payload(cls, payload: Any) -> Any:
-        structured = getattr(payload, "structured_content", None)
-        if structured is None:
-            structured = getattr(payload, "data", None)
-        if isinstance(structured, dict) and structured.get("ok") is False:
-            error = structured.get("error") or {}
-            raise RuntimeError(str(error.get("message") or "MCP 工具返回失败"))
-        return structured if structured is not None else {"text": cls._extract_mcp_text(payload)}
-
-    @classmethod
-    async def _call_mcp_tool(cls, tool_name: str, params: dict[str, Any]) -> Any:
-        client = cls._mcp_client()
-        async with client:
-            result = await client.call_tool(tool_name, params)
-        return cls._extract_mcp_payload(result)
-
-    @staticmethod
-    def _screen_message(trade_date: date, keyword: str) -> str:
-        return f"{trade_date.isoformat()} {keyword}"
-
-    @classmethod
-    async def _query_screener_page(
-        cls,
-        message: str,
-        page_no: int = 1,
-        page_size: int = 6000,
-    ) -> dict[str, Any]:
-        payload = await cls._call_mcp_tool(
-            "tdx_screener",
-            {
-                "message": message,
-                "rang": "AG",
-                "pageNo": str(page_no),
-                "pageSize": str(page_size),
-            },
-        )
-        if not isinstance(payload, dict):
-            raise RuntimeError("tdx_screener 返回格式异常")
-        return payload
-
-    @classmethod
-    async def _query_screener_all(cls, message: str, page_size: int = 6000) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        page_no = 1
-        total = None
-        while total is None or len(rows) < total:
-            payload = await cls._query_screener_page(message, page_no=page_no, page_size=page_size)
-            meta = payload.get("meta") or {}
-            data = payload.get("data") or []
-            if not isinstance(data, list):
-                break
-            rows.extend([row for row in data if isinstance(row, dict)])
-            total = int(meta.get("total") or len(rows))
-            current_count = int(meta.get("currentPageCount") or len(data))
-            if current_count <= 0 or len(data) == 0 or len(rows) >= total:
-                break
-            page_no += 1
-        return rows
-
-    @staticmethod
-    def _market_to_setcode(market: Any, symbol: str) -> str:
-        market_text = str(market or "").strip()
-        if market_text in {"0", "1", "2"}:
-            return market_text
-        if symbol.startswith(("6", "5", "9")):
-            return "1"
-        if symbol.startswith(("4", "8")):
-            return "2"
-        return "0"
-
-    @staticmethod
-    def _first_matching_number(row: dict[str, Any], prefixes: tuple[str, ...]) -> float:
-        for key, value in row.items():
-            if any(str(key).startswith(prefix) for prefix in prefixes):
-                try:
-                    return float(str(value).replace(",", ""))
-                except (TypeError, ValueError):
+        for record in reversed(records):
+            for key in date_keys:
+                value = record.get(key)
+                if value is None:
                     continue
-        return 0.0
-
-    @staticmethod
-    def _extract_meta_total(payload: Any) -> int:
-        if not isinstance(payload, dict):
-            return 0
-        meta = payload.get("meta") or {}
-        try:
-            return int(meta.get("total") or 0)
-        except (TypeError, ValueError):
-            return 0
+                if hasattr(value, "strftime"):
+                    normalized = value.strftime("%Y-%m-%d")
+                else:
+                    normalized = str(value).strip()
+                if normalized in target_dates:
+                    logger.info(
+                        "情绪数据日期匹配成功: trade_date=%s, date_key=%s, matched_value=%s",
+                        trade_date.isoformat(),
+                        key,
+                        normalized,
+                    )
+                    return record
+        sample_keys = list(records[-1].keys())[:10] if records else []
+        logger.warning(
+            "情绪数据日期匹配失败: trade_date=%s, target_dates=%s, total_rows=%s, sample_keys=%s",
+            trade_date.isoformat(),
+            sorted(target_dates),
+            len(records),
+            sample_keys,
+        )
+        return None
 
     @classmethod
     async def get_trade_calendar(cls) -> list[date]:
@@ -309,9 +260,16 @@ class SentimentService:
         try:
             if value is None:
                 return default
-            text = str(value).strip().replace(",", "").replace("%", "").replace("万", "")
+            text = str(value).strip().replace(",", "").replace("%", "")
             if not text or text in {"nan", "None", "--"}:
                 return default
+            multiplier = 1.0
+            if text.endswith("亿"):
+                multiplier = 100000000.0
+                text = text[:-1]
+            elif text.endswith("万"):
+                multiplier = 10000.0
+                text = text[:-1]
             return float(text)
         except (TypeError, ValueError):
             return default
@@ -324,18 +282,29 @@ class SentimentService:
         return parsed
 
     @classmethod
+    def _normalize_tdx_amount_to_yuan(cls, value: Any, default: float = 0.0) -> float:
+        amount = cls._sanitize_number(value, default)
+        if amount <= 0:
+            return default
+        # TDX K 线成交额字段单位是厘，入库前统一换算成元。
+        return amount / 1000.0
+
+    @classmethod
     def _parse_board_height(cls, row: dict[str, Any]) -> int:
-        for key in ("连续涨停天数", "连板数", "连续跌停天数"):
+        for key in ("连续涨停天数", "连板数", "连续跌停天数", "最高连板数"):
             if key in row:
                 parsed = int(cls._to_float(row.get(key), 0))
                 if parsed:
                     return parsed
 
-        board_text = str(row.get("几天几板") or "").strip()
+        board_text = str(row.get("几天几板") or row.get("涨停统计") or "").strip()
         if board_text:
             match = re.search(r"(\d+)\s*天\s*(\d+)\s*板", board_text)
             if match:
                 return int(match.group(2))
+            number_match = re.search(r"(\d+)", board_text)
+            if number_match:
+                return int(number_match.group(1))
 
         return 0
 
@@ -378,11 +347,24 @@ class SentimentService:
                     "symbol": symbol,
                     "name": cls._parse_name(record),
                     "board_height": cls._parse_board_height(record),
-                    "board_label": str(record.get("板型") or "").strip() or None,
-                    "first_limit_time": str(record.get("首次涨停时间") or "").strip() or None,
-                    "last_limit_time": str(record.get("最后涨停时间") or record.get("最近涨停时间") or "").strip() or None,
-                    "limit_open_count": int(cls._to_float(record.get("涨停打开次数") or record.get("涨停打开次数0#"), 0)),
-                    "reason": str(record.get("涨停原因") or record.get("原因揭秘") or "").strip() or None,
+                    "board_label": str(record.get("板型") or record.get("涨停统计") or "").strip() or None,
+                    "first_limit_time": str(record.get("首次涨停时间") or record.get("首次封板时间") or "").strip() or None,
+                    "last_limit_time": str(record.get("最后涨停时间") or record.get("最后封板时间") or record.get("最近涨停时间") or "").strip() or None,
+                    "limit_open_count": int(
+                        cls._to_float(
+                            record.get("涨停打开次数")
+                            or record.get("涨停打开次数0#")
+                            or record.get("炸板次数"),
+                            0,
+                        )
+                    ),
+                    "reason": str(
+                        record.get("涨停原因")
+                        or record.get("原因揭秘")
+                        or record.get("涨停原因类别")
+                        or record.get("所属行业")
+                        or ""
+                    ).strip() or None,
                     "payload_json": json.dumps(record, ensure_ascii=False, default=str),
                 }
             )
@@ -390,16 +372,24 @@ class SentimentService:
 
     @classmethod
     async def _fetch_pool_df(cls, pool_type: str, trade_date: date) -> Any:
+        ak = cls._load_akshare()
+        query_date = cls._format_pool_date(trade_date)
         mapping = {
-            "zt": "涨停",
-            "dt": "跌停",
-            "zbgc": "炸板",
-            "zrzt": "昨日涨停",
-            "strong": "强势股",
+            "zt": ak.stock_zt_pool_em,
+            "dt": ak.stock_zt_pool_dtgc_em,
+            "zbgc": ak.stock_zt_pool_zbgc_em,
+            "zrzt": ak.stock_zt_pool_previous_em,
+            "strong": ak.stock_zt_pool_strong_em,
         }
-        query = cls._screen_message(trade_date, mapping[pool_type])
-        rows = await cls._query_screener_all(query)
-        return rows
+        result = await cls._run_sync(mapping[pool_type], date=query_date)
+        row_count = len(result) if isinstance(result, list) else (0 if getattr(result, "empty", False) else len(result))
+        logger.info(
+            "情绪池取数完成: pool_type=%s, trade_date=%s, row_count=%s",
+            pool_type,
+            trade_date.isoformat(),
+            row_count,
+        )
+        return result
 
     @classmethod
     async def fetch_pool_data(cls, trade_date: date) -> list[PoolFetchResult]:
@@ -480,24 +470,50 @@ class SentimentService:
         status.updated_at = datetime.utcnow()
 
     @classmethod
-    async def _fetch_index_turnover_for_date(cls, symbol: str, trade_date: date) -> float:
-        setcode = "1" if symbol == "000001" else cls._market_to_setcode(None, symbol)
-        try:
-            payload = await cls._call_mcp_tool(
-                "tdx_quotes",
-                {
-                    "code": symbol,
-                    "setcode": setcode,
-                    "hasCalcInfo": "1",
-                    "hasCwInfo": "1",
-                },
-            )
-            if not isinstance(payload, dict):
-                return 0.0
-            hq_info = payload.get("HQInfo") or {}
-            return cls._sanitize_number(hq_info.get("Amount"), 0.0)
-        except Exception:
-            return 0.0
+    async def _fetch_index_kline_point(cls, symbol: str, trade_date: date) -> dict[str, Any] | None:
+        rows = await cls._get_tdx_source().get_index_kline_rows(symbol, kline_type="day", limit=240)
+        target_dates = {
+            trade_date.isoformat(),
+            trade_date.strftime("%Y-%m-%d"),
+        }
+        normalized_dates: list[str] = []
+        for row in rows:
+            raw_time = row.get("Time")
+            if raw_time is None:
+                continue
+            normalized_dates.append(str(raw_time).split("T", 1)[0])
+
+        for row in reversed(rows):
+            raw_time = row.get("Time")
+            if raw_time is None:
+                continue
+            normalized = str(raw_time).split("T", 1)[0]
+            if normalized in target_dates:
+                logger.info(
+                    "TDX 指数日线匹配成功: code=%s, trade_date=%s, matched_time=%s, amount=%s, up_count=%s, down_count=%s",
+                    symbol,
+                    trade_date.isoformat(),
+                    normalized,
+                    row.get("Amount"),
+                    row.get("UpCount"),
+                    row.get("DownCount"),
+                )
+                return row
+
+        date_span = None
+        if normalized_dates:
+            date_span = f"{normalized_dates[0]} ~ {normalized_dates[-1]}"
+        logger.warning(
+            "TDX 指数日线匹配失败: code=%s, trade_date=%s, total_rows=%s, date_span=%s",
+            symbol,
+            trade_date.isoformat(),
+            len(rows),
+            date_span,
+        )
+        raise RuntimeError(
+            f"TDX 指数日线缺少 {trade_date.isoformat()} 的数据"
+            + (f"，当前返回范围为 {date_span}" if date_span else "")
+        )
 
     @classmethod
     async def fetch_market_daily_data(cls, trade_date: date) -> dict[str, float]:
@@ -507,46 +523,70 @@ class SentimentService:
         rising_stock_count = 0
 
         try:
-            turnover_rows = await cls._query_screener_all(cls._screen_message(trade_date, "市场总成交额"))
-            turnover_amount = sum(
-                cls._first_matching_number(row, ("成交额(元)",))
-                for row in turnover_rows
+            sh_row, sz_row = await asyncio.gather(
+                cls._fetch_index_kline_point("sh000001", trade_date),
+                cls._fetch_index_kline_point("sz399001", trade_date),
+            )
+            sh_amount = cls._normalize_tdx_amount_to_yuan(sh_row.get("Amount"))
+            sz_amount = cls._normalize_tdx_amount_to_yuan(sz_row.get("Amount"))
+            sh_up_count = int(cls._sanitize_number(sh_row.get("UpCount")))
+            sz_up_count = int(cls._sanitize_number(sz_row.get("UpCount")))
+            sh_down_count = int(cls._sanitize_number(sh_row.get("DownCount")))
+            sz_down_count = int(cls._sanitize_number(sz_row.get("DownCount")))
+            turnover_amount = sh_amount + sz_amount
+            rising_stock_count = sh_up_count + sz_up_count
+            logger.info(
+                "情绪市场数据: trade_date=%s, source=tdx_index_market, sh_amount_raw=%s, sz_amount_raw=%s, turnover_amount=%s, sh_up_count=%s, sz_up_count=%s, rising_stock_count=%s, sh_down_count=%s, sz_down_count=%s",
+                trade_date.isoformat(),
+                sh_row.get("Amount"),
+                sz_row.get("Amount"),
+                turnover_amount,
+                sh_up_count,
+                sz_up_count,
+                rising_stock_count,
+                sh_down_count,
+                sz_down_count,
             )
         except Exception as exc:
-            logger.warning("通过 MCP 获取市场总成交额失败，回退指数成交额求和: %s", exc)
-            sh_amount, sz_amount = await asyncio.gather(
-                cls._fetch_index_turnover_for_date("000001", trade_date),
-                cls._fetch_index_turnover_for_date("399001", trade_date),
-            )
-            turnover_amount = cls._sanitize_number(sh_amount + sz_amount)
+            raise RuntimeError(f"通过 TDX HTTP 获取市场日线数据失败: {exc}") from exc
 
         try:
-            flow_rows = await cls._query_screener_all(cls._screen_message(trade_date, "主力资金"))
-            main_force_amount = sum(
-                cls._first_matching_number(row, ("主力净额",))
-                for row in flow_rows
-            )
+            ak = cls._load_akshare()
+            flow_df = await cls._run_sync(ak.stock_market_fund_flow)
+            flow_row = cls._pick_dataframe_date_row(flow_df, trade_date)
+            if flow_row:
+                main_force_amount = cls._sanitize_number(
+                    flow_row.get("主力净流入-净额")
+                    or flow_row.get("主力净流入")
+                    or flow_row.get("主力净额")
+                )
+                logger.info(
+                    "情绪市场数据: trade_date=%s, source=ak_main_force, matched_row=%s, main_force_amount=%s",
+                    trade_date.isoformat(),
+                    json.dumps(flow_row, ensure_ascii=False, default=str),
+                    main_force_amount,
+                )
         except Exception as exc:
-            logger.warning("通过 MCP 获取市场主力资金失败: %s", exc)
+            logger.warning("通过 AKShare 获取市场主力资金失败: %s", exc)
 
         try:
-            north_rows = await cls._query_screener_all(cls._screen_message(trade_date, "北向资金"))
-            northbound_amount = sum(
-                cls._first_matching_number(row, ("陆股通成交额(元)",))
-                for row in north_rows
-            )
+            ak = cls._load_akshare()
+            north_df = await cls._run_sync(ak.stock_hsgt_hist_em, symbol="北向资金")
+            north_row = cls._pick_dataframe_date_row(north_df, trade_date)
+            if north_row:
+                northbound_amount = cls._sanitize_number(
+                    north_row.get("当日成交净买额")
+                    or north_row.get("历史累计净买额")
+                    or north_row.get("净买额")
+                )
+                logger.info(
+                    "情绪市场数据: trade_date=%s, source=ak_northbound, matched_row=%s, northbound_amount=%s",
+                    trade_date.isoformat(),
+                    json.dumps(north_row, ensure_ascii=False, default=str),
+                    northbound_amount,
+                )
         except Exception as exc:
-            logger.warning("通过 MCP 获取北向资金失败: %s", exc)
-
-        try:
-            rising_payload = await cls._query_screener_page(
-                cls._screen_message(trade_date, "上涨家数"),
-                page_no=1,
-                page_size=1,
-            )
-            rising_stock_count = cls._extract_meta_total(rising_payload)
-        except Exception as exc:
-            logger.warning("通过 MCP 获取市场上涨家数失败: %s", exc)
+            logger.warning("通过 AKShare 获取北向资金失败: %s", exc)
 
         return {
             "rising_stock_count": float(rising_stock_count),
@@ -558,26 +598,28 @@ class SentimentService:
     @classmethod
     async def _fetch_returns_for_symbols(cls, symbols: Iterable[str], next_trade_date: date) -> list[float]:
         results: list[float] = []
-        next_date_str = next_trade_date.strftime("%Y%m%d")
+        target_dates = {
+            next_trade_date.isoformat(),
+            next_trade_date.strftime("%Y-%m-%d"),
+        }
 
         for symbol in symbols:
             try:
-                payload = await cls._call_mcp_tool(
-                    "tdx_kline",
-                    {
-                        "code": symbol,
-                        "setcode": cls._market_to_setcode(None, symbol),
-                        "period": "4",
-                        "wantNum": "80",
-                        "tqFlag": "1",
-                    },
+                payload = await cls._request_tdx_http(
+                    "/api/kline-all/tdx",
+                    {"code": symbol, "type": "day", "limit": 80},
                 )
-                if not isinstance(payload, dict):
-                    continue
-                rows = payload.get("Rows") or payload.get("rows") or []
+                rows = payload.get("list") or payload.get("List") or []
                 if not isinstance(rows, list) or not rows:
                     continue
-                position = next((idx for idx, row in enumerate(rows) if str(row.get("Data")) == next_date_str), -1)
+                position = next(
+                    (
+                        idx
+                        for idx, row in enumerate(rows)
+                        if str(row.get("Time", "")).split("T", 1)[0] in target_dates
+                    ),
+                    -1,
+                )
                 if position == 0:
                     continue
                 if position < 0:
@@ -586,9 +628,36 @@ class SentimentService:
                 cur_row = rows[position]
                 prev_close = cls._sanitize_number(prev_row.get("Close"))
                 cur_close = cls._sanitize_number(cur_row.get("Close"))
+                if prev_close > 1000:
+                    prev_close /= 1000.0
+                if cur_close > 1000:
+                    cur_close /= 1000.0
                 if prev_close > 0:
-                    results.append((cur_close / prev_close - 1) * 100)
-            except Exception:
+                    day_return = (cur_close / prev_close - 1) * 100
+                    results.append(day_return)
+                    logger.info(
+                        "昨日涨停收益计算: symbol=%s, trade_date=%s, prev_close=%s, cur_close=%s, day_return=%s",
+                        symbol,
+                        next_trade_date.isoformat(),
+                        prev_close,
+                        cur_close,
+                        round(day_return, 4),
+                    )
+                else:
+                    logger.warning(
+                        "昨日涨停收益跳过: symbol=%s, trade_date=%s, prev_close=%s, cur_close=%s",
+                        symbol,
+                        next_trade_date.isoformat(),
+                        prev_close,
+                        cur_close,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "昨日涨停收益获取失败: symbol=%s, trade_date=%s, error=%s",
+                    symbol,
+                    next_trade_date.isoformat(),
+                    exc,
+                )
                 continue
             await asyncio.sleep(0.05)
 
@@ -648,6 +717,27 @@ class SentimentService:
         avg_return = sum(returns) / len(returns) if returns else 0.0
         median_return = median(returns) if returns else 0.0
         max_return = max(returns) if returns else 0.0
+
+        logger.info(
+            "情绪指标计算完成: trade_date=%s, up_limit_count=%s, down_limit_count=%s, break_limit_count=%s, first_board_count=%s, second_board_count=%s, third_plus_board_count=%s, max_board_height=%s, advance_rate=%s, breakout_rate=%s, avg_return=%s, median_return=%s, max_return=%s, rising_stock_count=%s, turnover_amount=%s, northbound_amount=%s, main_force_amount=%s",
+            trade_date.isoformat(),
+            up_limit_count,
+            down_limit_count,
+            break_limit_count,
+            first_board_count,
+            second_board_count,
+            third_plus_board_count,
+            max_board_height,
+            round(advance_rate, 4),
+            round(breakout_rate, 4),
+            round(avg_return, 4),
+            round(median_return, 4),
+            round(max_return, 4),
+            int(cls._sanitize_number(market_data["rising_stock_count"])),
+            cls._sanitize_number(market_data["turnover_amount"]),
+            cls._sanitize_number(market_data["northbound_amount"]),
+            cls._sanitize_number(market_data["main_force_amount"]),
+        )
 
         metrics = (
             db.query(SentimentDailyMetrics)
@@ -734,6 +824,12 @@ class SentimentService:
                 for result in fetch_results:
                     cls.persist_pool_data(db, trade_date, result.pool_type, result.rows)
                     synced_pools.append(result.pool_type)
+                    logger.info(
+                        "情绪池写入完成: trade_date=%s, pool_type=%s, row_count=%s",
+                        trade_date.isoformat(),
+                        result.pool_type,
+                        len(result.rows),
+                    )
                     db.commit()
                 await cls.compute_daily_metrics(db, trade_date)
                 db.commit()

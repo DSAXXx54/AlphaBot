@@ -27,6 +27,18 @@ class TDXDataSource(DataSourceBase):
             raise ValueError(payload.get("message", "TDX request failed"))
         return payload.get("data")
 
+    async def get_index_kline_rows(self, code: str, kline_type: str = "day", limit: int = 240) -> List[Dict[str, Any]]:
+        data = await self._request(
+            "/api/index",
+            {
+                "code": code,
+                "type": kline_type,
+                "limit": limit,
+            },
+        )
+        rows = data.get("List", []) if isinstance(data, dict) else []
+        return rows if isinstance(rows, list) else []
+
     def _infer_exchange(self, code: str) -> str:
         if code.startswith(("5", "6", "9")):
             return "上海证券交易所"

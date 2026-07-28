@@ -252,8 +252,9 @@ export default function SentimentMetricsPrototype() {
   const [backfilling, setBackfilling] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [calendarError, setCalendarError] = useState<string | null>(null);
-  const [calendarNotice, setCalendarNotice] = useState<string | null>(null);
+  const [calendarWarning, setCalendarWarning] = useState<string | null>(null);
+  const [syncFeedback, setSyncFeedback] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
+  const [backfillFeedback, setBackfillFeedback] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
   const [selectedDate, setSelectedDate] = useState(formatDate(new Date()));
   const [backfillDays, setBackfillDays] = useState(20);
   const [forceBackfill, setForceBackfill] = useState(false);
@@ -284,13 +285,13 @@ export default function SentimentMetricsPrototype() {
 
   const loadCalendar = useCallback(async (monthDate: Date) => {
     setCalendarLoading(true);
-    setCalendarError(null);
+    setCalendarWarning(null);
     const response = await getSentimentCalendar(monthDate.getFullYear(), monthDate.getMonth() + 1);
     if (!response.success || !response.data) {
-      setCalendarError(response.error || '加载情绪数据日历失败');
+      setCalendarWarning(response.error || '加载情绪数据日历失败');
       setCalendarDays([]);
     } else {
-      setCalendarError(response.data.sync_warning || null);
+      setCalendarWarning(response.data.sync_warning || null);
       setCalendarDays(response.data.days);
       setSelectedDate((currentSelectedDate) => {
         if (response.data?.days.find((day) => day.date === currentSelectedDate && day.is_trading_day)) {
@@ -370,13 +371,12 @@ export default function SentimentMetricsPrototype() {
   const handleSyncSelectedDate = async () => {
     if (!selectedDate) return;
     setSyncing(true);
-    setCalendarError(null);
-    setCalendarNotice(null);
+    setSyncFeedback(null);
     const response = await syncSentimentByDate(selectedDate, true);
     if (!response.success) {
-      setCalendarError(response.error || '触发抓取失败');
+      setSyncFeedback({ tone: 'error', message: response.error || '触发抓取失败' });
     } else {
-      setCalendarNotice(response.data?.message || `${selectedDate} 抓取完成`);
+      setSyncFeedback({ tone: 'success', message: response.data?.message || `${selectedDate} 抓取完成` });
       await Promise.all([loadMetrics(), loadCalendar(activeMonth)]);
     }
     setSyncing(false);
@@ -384,15 +384,15 @@ export default function SentimentMetricsPrototype() {
 
   const handleBackfillRecentDays = async () => {
     setBackfilling(true);
-    setCalendarError(null);
-    setCalendarNotice(null);
+    setBackfillFeedback(null);
     const response = await backfillSentimentRecentDays(backfillDays, forceBackfill, selectedDate || undefined);
     if (!response.success || !response.data) {
-      setCalendarError(response.error || '批量回补失败');
+      setBackfillFeedback({ tone: 'error', message: response.error || '批量回补失败' });
     } else {
-      setCalendarNotice(
-        `近${backfillDays}个交易日${forceBackfill ? '强制回补' : '回补'}完成，新增 ${response.data.success_count} 天，跳过 ${response.data.skipped_count} 天，失败 ${response.data.failed_count} 天`
-      );
+      setBackfillFeedback({
+        tone: response.data.failed_count > 0 ? 'error' : 'success',
+        message: `近${backfillDays}个交易日${forceBackfill ? '强制回补' : '回补'}完成，新增 ${response.data.success_count} 天，跳过 ${response.data.skipped_count} 天，失败 ${response.data.failed_count} 天`,
+      });
       await Promise.all([loadMetrics(), loadCalendar(activeMonth)]);
     }
     setBackfilling(false);
@@ -583,17 +583,6 @@ export default function SentimentMetricsPrototype() {
 
                     <aside className="order-1 flex min-h-0 flex-col bg-[#f3f6fb] lg:order-2">
                       <div className="flex-1 overflow-y-auto px-4 py-3 sm:px-5 sm:py-4">
-                        {calendarError && (
-                          <div className="mb-4 rounded-[24px] border border-red-200 bg-red-50 px-4 py-3 text-[13px] leading-6 text-red-700">
-                            {calendarError}
-                          </div>
-                        )}
-                        {calendarNotice && (
-                          <div className="mb-4 rounded-[24px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13px] leading-6 text-emerald-700">
-                            {calendarNotice}
-                          </div>
-                        )}
-
                         <div className="space-y-4">
                           <div className="rounded-[20px] border border-slate-200 bg-white p-3.5 shadow-[0_10px_20px_rgba(15,23,42,0.05)] sm:p-4">
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -620,6 +609,11 @@ export default function SentimentMetricsPrototype() {
                               <span>本月同步进度</span>
                               <span>{monthCompletionRate}%</span>
                             </div>
+                            {calendarWarning && (
+                              <div className="mt-4 rounded-[16px] border border-amber-200 bg-amber-50 px-3 py-2.5 text-[12px] leading-5 text-amber-800">
+                                {calendarWarning}
+                              </div>
+                            )}
                           </div>
 
                           <div className="rounded-[20px] border border-slate-200 bg-white p-3.5 shadow-[0_10px_20px_rgba(15,23,42,0.05)] sm:p-4">
@@ -656,6 +650,18 @@ export default function SentimentMetricsPrototype() {
                               <RefreshCw className="mr-2 h-4 w-4" />
                               {forceBackfill ? `强制回补近${backfillDays}个交易日` : `回补近${backfillDays}个交易日`}
                             </Button>
+                            {backfillFeedback && (
+                              <div
+                                className={cn(
+                                  'mt-3 rounded-[16px] px-3 py-2.5 text-[12px] leading-5',
+                                  backfillFeedback.tone === 'error'
+                                    ? 'border border-red-200 bg-red-50 text-red-700'
+                                    : 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                                )}
+                              >
+                                {backfillFeedback.message}
+                              </div>
+                            )}
                           </div>
 
                           <div className="rounded-[20px] border border-slate-200 bg-white p-3.5 shadow-[0_10px_20px_rgba(15,23,42,0.05)] sm:p-4">
@@ -670,6 +676,18 @@ export default function SentimentMetricsPrototype() {
                               <RefreshCw className="mr-2 h-4 w-4" />
                               重新抓取 {selectedDate || '所选日期'}
                             </Button>
+                            {syncFeedback && (
+                              <div
+                                className={cn(
+                                  'mt-3 rounded-[16px] px-3 py-2.5 text-[12px] leading-5',
+                                  syncFeedback.tone === 'error'
+                                    ? 'border border-red-200 bg-red-50 text-red-700'
+                                    : 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                                )}
+                              >
+                                {syncFeedback.message}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
