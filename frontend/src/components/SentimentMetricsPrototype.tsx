@@ -290,6 +290,7 @@ export default function SentimentMetricsPrototype() {
       setCalendarError(response.error || '加载情绪数据日历失败');
       setCalendarDays([]);
     } else {
+      setCalendarError(response.data.sync_warning || null);
       setCalendarDays(response.data.days);
       setSelectedDate((currentSelectedDate) => {
         if (response.data?.days.find((day) => day.date === currentSelectedDate && day.is_trading_day)) {
@@ -359,10 +360,6 @@ export default function SentimentMetricsPrototype() {
   );
   const monthReadyDays = useMemo(
     () => calendarDays.filter((day) => day.sync_status === 'success').length,
-    [calendarDays]
-  );
-  const monthPendingDays = useMemo(
-    () => calendarDays.filter((day) => day.is_trading_day && day.sync_status !== 'success').length,
     [calendarDays]
   );
   const monthCompletionRate = useMemo(

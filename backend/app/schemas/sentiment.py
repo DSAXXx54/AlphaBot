@@ -38,6 +38,7 @@ class SentimentCalendarResponse(BaseModel):
     year: int
     month: int
     days: list[SentimentCalendarDay]
+    sync_warning: str | None = None
 
 
 class SentimentSyncDateRequest(BaseModel):

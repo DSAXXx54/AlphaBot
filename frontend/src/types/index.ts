@@ -91,6 +91,7 @@ export interface SentimentCalendarResponse {
   year: number;
   month: number;
   days: SentimentCalendarDay[];
+  sync_warning?: string | null;
 }
 
 export interface SentimentSyncDateResponse {

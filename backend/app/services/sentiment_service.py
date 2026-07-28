@@ -258,6 +258,18 @@ class SentimentService:
         ):
             status_rows.setdefault(row.trade_date, []).append(row.status)
 
+        latest_failed_status = (
+            db.query(SentimentSyncStatus)
+            .filter(
+                SentimentSyncStatus.trade_date >= start,
+                SentimentSyncStatus.trade_date <= end,
+                SentimentSyncStatus.status == "failed",
+                SentimentSyncStatus.last_error.isnot(None),
+            )
+            .order_by(SentimentSyncStatus.updated_at.desc())
+            .first()
+        )
+
         days: list[SentimentCalendarDay] = []
         current = start
         while current <= end:
@@ -285,7 +297,12 @@ class SentimentService:
             )
             current += timedelta(days=1)
 
-        return SentimentCalendarResponse(year=year, month=month, days=days)
+        return SentimentCalendarResponse(
+            year=year,
+            month=month,
+            days=days,
+            sync_warning=latest_failed_status.last_error if latest_failed_status else None,
+        )
 
     @staticmethod
     def _to_float(value: Any, default: float = 0.0) -> float:
