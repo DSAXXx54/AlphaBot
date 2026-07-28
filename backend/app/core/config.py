@@ -141,8 +141,8 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     
     # 外部 MCP / TrendRadar 等 HTTP 接入（可选）
-    TRENDRADAR_MCP_HTTP_URL: str = os.getenv("TRENDRADAR_MCP_HTTP_URL", "")
-    TRENDRADAR_MCP_API_KEY: str = os.getenv("TRENDRADAR_MCP_API_KEY", "")
+    # TrendRadar MCP 的 URL / API Key 已迁移到 app/config/mcp_servers.yml，
+    # 由 McpHostRegistry 通过环境变量占位展开，不再在 Settings 中单独维护。
 
     # World Cup / Polymarket 配置
     WORLDCUP_POLYMARKET_ENABLED: bool = os.getenv("WORLDCUP_POLYMARKET_ENABLED", "True").lower() == "true"
