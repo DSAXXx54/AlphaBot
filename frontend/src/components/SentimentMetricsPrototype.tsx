@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import type { ReactElement } from 'react';
 import {
   CartesianGrid,
   Legend,
@@ -843,10 +844,10 @@ export default function SentimentMetricsPrototype() {
                         name={series.name}
                         stroke={series.color}
                         strokeWidth={series.isPrimary ? 2.5 : 1.8}
-                        dot={(props: ChartDotProps) => {
+                        dot={(props: ChartDotProps): ReactElement<SVGElement> => {
                           const { cx, cy, payload } = props;
                           if (typeof cx !== 'number' || typeof cy !== 'number' || !payload) {
-                            return null;
+                            return <g />;
                           }
                           if (!series.isPrimary || !highlightedDates.has(payload.date)) {
                             return <circle key={`${String(series.key)}-${payload.date}`} cx={cx} cy={cy} r={2.5} fill={series.color} stroke="none" />;
