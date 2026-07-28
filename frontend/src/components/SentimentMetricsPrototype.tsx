@@ -17,9 +17,12 @@ import {
   BarChart3,
   CalendarRange,
   CircleDollarSign,
+  Clock3,
   Gauge,
   Flame,
   CalendarDays,
+  ChevronLeft,
+  ChevronRight,
   RefreshCw,
   Target,
   TrendingUp,
@@ -28,6 +31,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
+import { Switch } from './ui/switch';
 import { cn } from '@/lib/utils';
 import { backfillSentimentRecentDays, getSentimentCalendar, getSentimentMetrics, syncSentimentByDate } from '@/lib/api';
 import type { SentimentCalendarDay, SentimentMetricPoint, SentimentMetricsResponse } from '@/types';
@@ -77,9 +81,9 @@ const METRIC_CONFIGS: MetricConfig[] = [
     threshold: 6.5,
     description: '观察市场核心情绪比率，包含涨停总数占上涨家数比。',
     series: [
-      { key: 'advanceRate', name: '涨停晋级率', color: '#3b82f6', isPrimary: true },
+      { key: 'advanceRate', name: '涨停晋级率', color: '#3b82f6' },
       { key: 'breakoutRate', name: '炸板率', color: '#f97316' },
-      { key: 'upLimitToRisingRatio', name: '涨停占上涨比', color: '#10b981' },
+      { key: 'upLimitToRisingRatio', name: '涨停占上涨比', color: '#10b981', isPrimary: true },
     ],
   },
   {
@@ -126,6 +130,12 @@ const METRIC_CONFIGS: MetricConfig[] = [
 const PRESET_RANGES: PresetRange[] = [20, 40, 60, 120];
 const BACKFILL_DAY_OPTIONS = [5, 10, 20, 40, 60, 120];
 const WEEK_HEADERS = ['一', '二', '三', '四', '五', '六', '日'];
+const CALENDAR_LEGEND = [
+  { key: 'success', label: '已同步', dotClassName: 'bg-emerald-500', textClassName: 'text-emerald-700' },
+  { key: 'partial', label: '待补齐', dotClassName: 'bg-amber-500', textClassName: 'text-amber-700' },
+  { key: 'failed', label: '抓取失败', dotClassName: 'bg-red-500', textClassName: 'text-red-700' },
+  { key: 'missing', label: '未抓取', dotClassName: 'bg-slate-300', textClassName: 'text-slate-600' },
+];
 
 function formatDate(date: Date) {
   const year = date.getFullYear();
@@ -213,6 +223,23 @@ function getStatusVariant(day: SentimentCalendarDay | null): 'success' | 'warnin
   return 'outline';
 }
 
+function getDayActionLabel(day: SentimentCalendarDay | null) {
+  if (!day) return '等待选择';
+  if (!day.is_trading_day) return '休市';
+  if (day.sync_status === 'success') return '可重抓';
+  if (day.sync_status === 'partial') return '建议补齐';
+  if (day.sync_status === 'failed') return '建议重试';
+  return '等待抓取';
+}
+
+function getCalendarCellLabel(day: SentimentCalendarDay) {
+  if (day.sync_status === 'success') return '已同步';
+  if (day.sync_status === 'partial') return '待补齐';
+  if (day.sync_status === 'failed') return '抓取失败';
+  if (day.sync_status === 'non_trading') return '休市';
+  return '未抓取';
+}
+
 export default function SentimentMetricsPrototype() {
   const [metricKey, setMetricKey] = useState<MetricKey>('ratio');
   const [activeRange, setActiveRange] = useState<PresetRange>(120);
@@ -228,6 +255,7 @@ export default function SentimentMetricsPrototype() {
   const [calendarNotice, setCalendarNotice] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState(formatDate(new Date()));
   const [backfillDays, setBackfillDays] = useState(20);
+  const [forceBackfill, setForceBackfill] = useState(false);
   const [activeMonth, setActiveMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -336,6 +364,10 @@ export default function SentimentMetricsPrototype() {
     () => calendarDays.filter((day) => day.is_trading_day && day.sync_status !== 'success').length,
     [calendarDays]
   );
+  const monthCompletionRate = useMemo(
+    () => (monthTradingDays > 0 ? Math.round((monthReadyDays / monthTradingDays) * 100) : 0),
+    [monthReadyDays, monthTradingDays]
+  );
 
   const handleSyncSelectedDate = async () => {
     if (!selectedDate) return;
@@ -356,12 +388,12 @@ export default function SentimentMetricsPrototype() {
     setBackfilling(true);
     setCalendarError(null);
     setCalendarNotice(null);
-    const response = await backfillSentimentRecentDays(backfillDays, false, selectedDate || undefined);
+    const response = await backfillSentimentRecentDays(backfillDays, forceBackfill, selectedDate || undefined);
     if (!response.success || !response.data) {
       setCalendarError(response.error || '批量回补失败');
     } else {
       setCalendarNotice(
-        `近${backfillDays}个交易日回补完成，新增 ${response.data.success_count} 天，跳过 ${response.data.skipped_count} 天，失败 ${response.data.failed_count} 天`
+        `近${backfillDays}个交易日${forceBackfill ? '强制回补' : '回补'}完成，新增 ${response.data.success_count} 天，跳过 ${response.data.skipped_count} 天，失败 ${response.data.failed_count} 天`
       );
       await Promise.all([loadMetrics(), loadCalendar(activeMonth)]);
     }
@@ -369,6 +401,9 @@ export default function SentimentMetricsPrototype() {
   };
 
   const monthLabel = `${activeMonth.getFullYear()}年${activeMonth.getMonth() + 1}月`;
+  const selectedStatusLabel = getStatusLabel(selectedCalendarDay);
+  const selectedStatusVariant = getStatusVariant(selectedCalendarDay);
+  const selectedActionLabel = getDayActionLabel(selectedCalendarDay);
 
   return (
     <div className="space-y-6">
@@ -403,182 +438,244 @@ export default function SentimentMetricsPrototype() {
                     数据日历
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="max-h-[88vh] max-w-[1120px] overflow-hidden p-0">
-                  <DialogHeader className="border-b border-border px-5 py-4">
-                    <DialogTitle className="text-[18px] font-semibold tracking-[-0.02em] text-foreground">情绪数据日历</DialogTitle>
-                    <DialogDescription className="text-[13px] leading-6 text-muted-foreground">
-                      围绕一个交易月完成选日、补抓和状态检查。
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="flex max-h-[calc(88vh-88px)] flex-col overflow-hidden">
-                    <div className="border-b border-border bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.10),transparent_42%),linear-gradient(180deg,rgba(248,250,252,0.9),rgba(248,250,252,0.4))] px-5 py-4">
-                      <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-                        <div>
-                          <div className="text-[10px] font-medium uppercase tracking-[0.28em] text-muted-foreground">当前选中</div>
-                          <div className="mt-2 flex flex-wrap items-center gap-3">
-                            <div className="text-[30px] font-semibold tracking-[-0.03em] text-foreground">{selectedDate || '--'}</div>
-                            <Badge variant={getStatusVariant(selectedCalendarDay)}>{getStatusLabel(selectedCalendarDay)}</Badge>
-                            <span className="text-[13px] leading-6 text-muted-foreground">
-                              {selectedCalendarDay?.is_trading_day ? '可作为单日重抓或批量回补截止日。' : '非交易日仅用于浏览状态。'}
-                            </span>
+                <DialogContent className="h-[100dvh] w-screen max-w-none overflow-hidden border-none bg-[#f3f6fb] p-0 sm:h-[92vh] sm:w-[calc(100vw-20px)] sm:max-w-[1120px] sm:rounded-[28px] sm:border sm:border-slate-200 lg:max-h-[84vh]">
+                  <DialogHeader className="border-b border-slate-200 bg-white px-4 py-3 sm:px-6 sm:py-4">
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0 max-w-2xl pr-8 sm:pr-0">
+                          <div className="flex items-center gap-2 text-[11px] font-medium tracking-[0.12em] text-slate-500">
+                            <CalendarDays className="h-3.5 w-3.5" />
+                            数据补抓
                           </div>
+                          <DialogTitle className="mt-1 text-[20px] font-semibold tracking-[-0.03em] text-slate-950 sm:text-[22px]">
+                            交易日历
+                          </DialogTitle>
+                          <DialogDescription className="mt-1 text-[12px] leading-5 text-slate-600 sm:text-[13px]">
+                            查看月度同步情况，并对缺失数据执行单日重抓或批量回补。
+                          </DialogDescription>
                         </div>
-                        <div className="grid grid-cols-3 gap-3 xl:min-w-[420px]">
-                          <div className="rounded-2xl border border-border bg-background/80 px-4 py-3">
-                            <div className="text-[11px] text-muted-foreground">交易日</div>
-                            <div className="mt-1 text-[26px] font-semibold tracking-[-0.03em] text-foreground">{monthTradingDays}</div>
-                          </div>
-                          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 px-4 py-3">
-                            <div className="text-[11px] text-muted-foreground">已就绪</div>
-                            <div className="mt-1 text-[26px] font-semibold tracking-[-0.03em] text-emerald-700">{monthReadyDays}</div>
-                          </div>
-                          <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3">
-                            <div className="text-[11px] text-muted-foreground">待补抓</div>
-                            <div className="mt-1 text-[26px] font-semibold tracking-[-0.03em] text-amber-700">{monthPendingDays}</div>
-                          </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant={selectedStatusVariant}>{selectedStatusLabel}</Badge>
+                          <Badge variant="outline">{selectedCalendarDay?.is_trading_day ? '交易日' : '非交易日'}</Badge>
                         </div>
                       </div>
                     </div>
-
-                    <div className="grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[1fr_320px]">
-                      <div className="flex min-h-0 flex-col border-b border-border bg-background lg:border-b-0 lg:border-r">
-                        <div className="border-b border-border px-5 py-4">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                              <div className="text-[10px] font-medium uppercase tracking-[0.28em] text-muted-foreground">交易月历</div>
-                              <div className="mt-1 text-[20px] font-semibold tracking-[-0.02em] text-foreground">{monthLabel}</div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <Button variant="outline" size="sm" onClick={() => setActiveMonth(new Date(activeMonth.getFullYear(), activeMonth.getMonth() - 1, 1))}>
-                                上月
-                              </Button>
-                              <Button variant="outline" size="sm" onClick={() => setActiveMonth(new Date(activeMonth.getFullYear(), activeMonth.getMonth() + 1, 1))}>
-                                下月
-                              </Button>
+                  </DialogHeader>
+                  <div className="grid h-[calc(100dvh-92px)] min-h-0 bg-[#f3f6fb] sm:h-[calc(92vh-100px)] lg:h-auto lg:max-h-[calc(84vh-100px)] lg:grid-cols-[minmax(0,1.28fr)_340px]">
+                    <section className="order-2 flex min-h-0 flex-col border-t border-slate-200 bg-[#f8fafc] lg:order-1 lg:border-r lg:border-t-0">
+                      <div className="border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
+                        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                          <div>
+                            <div className="text-[11px] tracking-[0.08em] text-slate-500">月视图</div>
+                            <div className="mt-1 text-[20px] font-semibold tracking-[-0.03em] text-slate-950 sm:text-[22px]">{monthLabel}</div>
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              {CALENDAR_LEGEND.map((item) => (
+                                <div key={item.key} className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px]">
+                                  <span className={cn('h-2.5 w-2.5 rounded-full', item.dotClassName)} />
+                                  <span className={item.textClassName}>{item.label}</span>
+                                </div>
+                              ))}
                             </div>
                           </div>
-                        </div>
-                        <div className="flex-1 overflow-y-auto px-5 py-4">
-                          {calendarLoading && (
-                            <div className="rounded-2xl border border-dashed border-border px-4 py-8 text-sm text-muted-foreground">
-                              正在加载日历...
-                            </div>
-                          )}
-                          {!calendarLoading && (
-                            <div className="rounded-3xl border border-border bg-muted/10 p-4">
-                              <div className="mb-3 grid grid-cols-7 gap-2">
-                                {WEEK_HEADERS.map((header) => (
-                                  <div key={header} className="px-2 text-center text-[11px] font-medium tracking-[0.08em] text-muted-foreground">
-                                    {header}
-                                  </div>
-                                ))}
-                              </div>
-                              <div className="grid grid-cols-7 gap-2">
-                                {calendarCells.map((day, index) => (
-                                  <div key={day ? day.date : `blank-${index}`} className="min-h-[6rem]">
-                                    {day ? (
-                                      <button
-                                        type="button"
-                                        onClick={() => day.is_trading_day && setSelectedDate(day.date)}
-                                        className={cn(
-                                          'flex h-full w-full flex-col rounded-2xl border px-3 py-3 text-left transition-all',
-                                          getStatusTone(day),
-                                          selectedDate === day.date && day.is_trading_day ? 'border-primary shadow-[0_0_0_2px_rgba(59,130,246,0.18)]' : '',
-                                          !day.is_trading_day ? 'cursor-not-allowed opacity-70' : 'hover:-translate-y-0.5 hover:border-primary/50'
-                                        )}
-                                      >
-                                        <div className="flex items-center justify-between gap-2">
-                                          <span className="text-[15px] font-semibold tracking-[-0.01em]">{parseDate(day.date).getDate()}</span>
-                                          <span
-                                            className={cn(
-                                              'h-2.5 w-2.5 rounded-full',
-                                              day.sync_status === 'success'
-                                                ? 'bg-emerald-500'
-                                                : day.sync_status === 'partial'
-                                                  ? 'bg-amber-500'
-                                                  : day.sync_status === 'failed'
-                                                    ? 'bg-red-500'
-                                                    : day.sync_status === 'non_trading'
-                                                      ? 'bg-muted-foreground/40'
-                                                      : 'bg-slate-300'
-                                            )}
-                                          />
-                                        </div>
-                                        <span className="mt-3 line-clamp-2 text-[11px] font-medium leading-4">{getStatusLabel(day)}</span>
-                                        <span className="mt-auto pt-3 text-[10px] tracking-[0.04em] text-muted-foreground">
-                                          {day.is_trading_day ? (selectedDate === day.date ? '当前选中' : '点击查看') : '休市'}
-                                        </span>
-                                      </button>
-                                    ) : (
-                                      <div className="h-full rounded-2xl" />
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
+                          <div className="grid grid-cols-2 gap-2 self-start sm:flex xl:self-auto">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setActiveMonth(new Date(activeMonth.getFullYear(), activeMonth.getMonth() - 1, 1))}
+                              className="h-9 rounded-xl px-3"
+                            >
+                              <ChevronLeft className="mr-1 h-4 w-4" />
+                              上月
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setActiveMonth(new Date(activeMonth.getFullYear(), activeMonth.getMonth() + 1, 1))}
+                              className="h-9 rounded-xl px-3"
+                            >
+                              下月
+                              <ChevronRight className="ml-1 h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
                       </div>
+                      <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6">
+                        {calendarLoading && (
+                          <div className="rounded-[24px] border border-dashed border-slate-300 bg-white px-4 py-10 text-sm text-slate-500">
+                            正在加载日历...
+                          </div>
+                        )}
+                        {!calendarLoading && (
+                          <div className="space-y-4">
+                            <div className="rounded-[24px] border border-slate-200 bg-white p-2.5 shadow-[0_12px_24px_rgba(15,23,42,0.05)] sm:p-4">
+                              <div className="-mx-1 overflow-x-auto overflow-y-hidden pb-1 sm:mx-0 sm:overflow-x-visible">
+                                <div className="w-max min-w-[320px] px-1 sm:min-w-0 sm:w-auto sm:px-0">
+                                  <div className="mb-2 grid grid-cols-7 gap-1.5 sm:mb-3 sm:gap-2">
+                                    {WEEK_HEADERS.map((header) => (
+                                      <div key={header} className="px-1 text-center text-[9px] font-semibold tracking-[0.08em] text-slate-400 sm:px-2 sm:text-[10px] sm:tracking-[0.18em]">
+                                        {header}
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+                                    {calendarCells.map((day, index) => (
+                                      <div key={day ? day.date : `blank-${index}`} className="min-h-[3.85rem] sm:min-h-[5rem]">
+                                        {day ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => day.is_trading_day && setSelectedDate(day.date)}
+                                            className={cn(
+                                              'group flex h-full w-full flex-col rounded-[14px] border px-1.5 py-1.5 text-left transition-all duration-200 sm:rounded-[22px] sm:px-3 sm:py-2.5',
+                                              getStatusTone(day).replace('border-border', 'border-slate-200').replace('bg-background', 'bg-white'),
+                                              selectedDate === day.date && day.is_trading_day
+                                                ? 'border-sky-400 bg-sky-50 shadow-[0_10px_22px_rgba(59,130,246,0.14)]'
+                                                : '',
+                                              !day.is_trading_day
+                                                ? 'cursor-not-allowed opacity-60'
+                                                : 'hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-[0_10px_22px_rgba(15,23,42,0.08)]'
+                                            )}
+                                          >
+                                            <div className="flex items-start justify-between gap-2">
+                                              <div>
+                                                <div className="text-[12px] font-semibold tracking-[-0.03em] sm:text-[15px]">{parseDate(day.date).getDate()}</div>
+                                                <div className="mt-0.5 hidden text-[8px] tracking-[0.08em] text-slate-400 sm:block">
+                                                  {day.is_trading_day ? '交易日' : '休市'}
+                                                </div>
+                                              </div>
+                                              <div className="flex flex-col items-end gap-1">
+                                                <span
+                                                  className={cn(
+                                                    'h-2.5 w-2.5 rounded-full shadow-sm',
+                                                    day.sync_status === 'success'
+                                                      ? 'bg-emerald-500'
+                                                      : day.sync_status === 'partial'
+                                                        ? 'bg-amber-500'
+                                                        : day.sync_status === 'failed'
+                                                          ? 'bg-red-500'
+                                                          : day.sync_status === 'non_trading'
+                                                            ? 'bg-muted-foreground/40'
+                                                            : 'bg-slate-300'
+                                                  )}
+                                                />
+                                                {selectedDate === day.date && day.is_trading_day && (
+                                                  <span className="hidden rounded-full bg-sky-100 px-1.5 py-0.5 text-[8px] font-semibold text-sky-700 sm:inline-flex">
+                                                    当前
+                                                  </span>
+                                                )}
+                                              </div>
+                                            </div>
+                                            <div className="mt-1 text-[9px] font-medium leading-3 text-slate-700 sm:mt-3 sm:text-[11px] sm:leading-4">{getCalendarCellLabel(day)}</div>
+                                            <div className="mt-auto hidden pt-2 text-[10px] text-slate-400 sm:block">
+                                              {day.is_trading_day ? (selectedDate === day.date ? '已选中' : '点击查看') : '休市'}
+                                            </div>
+                                          </button>
+                                        ) : (
+                                          <div className="h-full rounded-[18px] border border-dashed border-transparent sm:rounded-[22px]" />
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </section>
 
-                      <div className="overflow-y-auto bg-muted/10 px-5 py-4">
+                    <aside className="order-1 flex min-h-0 flex-col bg-[#f3f6fb] lg:order-2">
+                      <div className="flex-1 overflow-y-auto px-4 py-3 sm:px-5 sm:py-4">
                         {calendarError && (
-                          <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] leading-6 text-red-700">
+                          <div className="mb-4 rounded-[24px] border border-red-200 bg-red-50 px-4 py-3 text-[13px] leading-6 text-red-700">
                             {calendarError}
                           </div>
                         )}
                         {calendarNotice && (
-                          <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13px] leading-6 text-emerald-700">
+                          <div className="mb-4 rounded-[24px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13px] leading-6 text-emerald-700">
                             {calendarNotice}
                           </div>
                         )}
+
                         <div className="space-y-4">
-                          <div className="rounded-2xl border border-border bg-background p-4">
-                            <div className="text-[15px] font-semibold tracking-[-0.01em] text-foreground">批量回补</div>
-                            <div className="mt-2 text-[13px] leading-6 text-muted-foreground">
-                              以当前选中日期为截止日，只补缺失数据，不重复覆盖已完成的交易日。
+                          <div className="rounded-[20px] border border-slate-200 bg-white p-3.5 shadow-[0_10px_20px_rgba(15,23,42,0.05)] sm:p-4">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                              <div>
+                                <div className="text-[10px] text-slate-500">所选日期状态</div>
+                                <div className="mt-1 text-[18px] font-semibold tracking-[-0.03em] text-slate-950">{selectedDate || '--'}</div>
+                                <div className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500">
+                                  <Clock3 className="h-3.5 w-3.5" />
+                                  {selectedActionLabel}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <Badge variant={selectedStatusVariant}>{selectedStatusLabel}</Badge>
+                                <Badge variant="outline">{selectedCalendarDay?.is_trading_day ? '可执行操作' : '休市不可抓取'}</Badge>
+                              </div>
                             </div>
-                            <div className="mt-4 grid grid-cols-3 gap-2">
+                            <div className="mt-4 h-2 rounded-full bg-slate-100">
+                              <div
+                                className="h-full rounded-full bg-sky-500 transition-all"
+                                style={{ width: `${monthCompletionRate}%` }}
+                              />
+                            </div>
+                            <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
+                              <span>本月同步进度</span>
+                              <span>{monthCompletionRate}%</span>
+                            </div>
+                          </div>
+
+                          <div className="rounded-[20px] border border-slate-200 bg-white p-3.5 shadow-[0_10px_20px_rgba(15,23,42,0.05)] sm:p-4">
+                            <div className="flex flex-col gap-2 border-b border-slate-100 pb-3 sm:flex-row sm:items-start sm:justify-between">
+                              <div>
+                                <div className="text-[14px] font-semibold tracking-[-0.02em] text-slate-950">批量回补</div>
+                                <div className="mt-1 text-[11px] leading-5 text-slate-500">以当前选中日期为截止点，向前补齐最近交易日数据。</div>
+                              </div>
+                              <Badge variant="outline">{selectedDate || '--'} 截止</Badge>
+                            </div>
+                            <div className="mt-3 rounded-[18px] border border-slate-200 bg-slate-50 p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-[12px] font-medium text-slate-900">强制回补</div>
+                                  <div className="mt-0.5 text-[10px] leading-4 text-slate-500">开启后会覆盖已同步日期，适合纠正异常或补全脏数据。</div>
+                                </div>
+                                <Switch checked={forceBackfill} onCheckedChange={setForceBackfill} aria-label="切换强制回补" />
+                              </div>
+                            </div>
+                            <div className="mt-3 grid grid-cols-3 gap-2">
                               {BACKFILL_DAY_OPTIONS.map((days) => (
                                 <Button
                                   key={days}
                                   variant={backfillDays === days ? 'primary' : 'outline'}
                                   size="sm"
                                   onClick={() => setBackfillDays(days)}
-                                  className="px-0 text-[12px] font-medium"
+                                  className="h-8 rounded-xl px-0 text-[11px] font-medium sm:h-9"
                                 >
                                   {days}日
                                 </Button>
                               ))}
                             </div>
-                            <Button className="mt-4 w-full" variant="outline" onClick={handleBackfillRecentDays} isLoading={backfilling}>
+                            <Button className="mt-3 h-10 w-full rounded-xl text-[12px]" variant="outline" onClick={handleBackfillRecentDays} isLoading={backfilling}>
                               <RefreshCw className="mr-2 h-4 w-4" />
-                              回补近{backfillDays}个交易日
+                              {forceBackfill ? `强制回补近${backfillDays}个交易日` : `回补近${backfillDays}个交易日`}
                             </Button>
                           </div>
 
-                          <div className="rounded-2xl border border-border bg-background p-4">
-                            <div className="text-[15px] font-semibold tracking-[-0.01em] text-foreground">单日重抓</div>
-                            <div className="mt-2 text-[13px] leading-6 text-muted-foreground">
-                              对当前选中交易日重新拉取池子数据，并覆盖当天聚合指标。
+                          <div className="rounded-[20px] border border-slate-200 bg-white p-3.5 shadow-[0_10px_20px_rgba(15,23,42,0.05)] sm:p-4">
+                            <div className="flex flex-col gap-2 border-b border-slate-100 pb-3 sm:flex-row sm:items-start sm:justify-between">
+                              <div>
+                                <div className="text-[14px] font-semibold tracking-[-0.02em] text-slate-950">单日重抓</div>
+                                <div className="mt-1 text-[11px] leading-5 text-slate-500">重新拉取并覆盖当天数据，适合已失败或需要刷新口径的日期。</div>
+                              </div>
+                              <Badge variant="warning">覆盖更新</Badge>
                             </div>
-                            <Button className="mt-4 w-full" variant="primary" onClick={handleSyncSelectedDate} isLoading={syncing}>
+                            <Button className="mt-3 h-10 w-full rounded-xl text-[12px]" variant="primary" onClick={handleSyncSelectedDate} isLoading={syncing}>
                               <RefreshCw className="mr-2 h-4 w-4" />
                               重新抓取 {selectedDate || '所选日期'}
                             </Button>
                           </div>
-
-                          <div className="rounded-2xl border border-border bg-background p-4">
-                            <div className="text-[15px] font-semibold tracking-[-0.01em] text-foreground">状态图例</div>
-                            <div className="mt-3 grid gap-2 text-[12px] leading-5 text-muted-foreground">
-                              <div className="flex items-center justify-between"><span>成功</span><Badge variant="success">已就绪</Badge></div>
-                              <div className="flex items-center justify-between"><span>部分缺失</span><Badge variant="warning">部分缺失</Badge></div>
-                              <div className="flex items-center justify-between"><span>失败</span><Badge variant="destructive">抓取失败</Badge></div>
-                              <div className="flex items-center justify-between"><span>未抓取</span><Badge variant="outline">未抓取</Badge></div>
-                            </div>
-                          </div>
                         </div>
                       </div>
-                    </div>
+                    </aside>
                   </div>
                 </DialogContent>
               </Dialog>
@@ -752,10 +849,10 @@ export default function SentimentMetricsPrototype() {
                             return null;
                           }
                           if (!series.isPrimary || !highlightedDates.has(payload.date)) {
-                            return <circle cx={cx} cy={cy} r={2.5} fill={series.color} stroke="none" />;
+                            return <circle key={`${String(series.key)}-${payload.date}`} cx={cx} cy={cy} r={2.5} fill={series.color} stroke="none" />;
                           }
                           return (
-                            <g>
+                            <g key={`${String(series.key)}-${payload.date}`}>
                               <circle cx={cx} cy={cy} r={11} fill="rgba(239, 68, 68, 0.08)" />
                               <circle cx={cx} cy={cy} r={7} fill="#ffffff" stroke="#ef4444" strokeWidth={2} />
                               <circle cx={cx} cy={cy} r={3} fill="#ef4444" />
