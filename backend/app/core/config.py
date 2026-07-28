@@ -169,7 +169,7 @@ class Settings(BaseSettings):
     WORLDCUP_ODDS_API_CACHE_SECONDS: int = int(os.getenv("WORLDCUP_ODDS_API_CACHE_SECONDS", "300"))
     WORLDCUP_ODDS_API_TIMEOUT: float = float(os.getenv("WORLDCUP_ODDS_API_TIMEOUT", "10"))
     
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 # 创建全局设置对象
 settings = Settings() 
