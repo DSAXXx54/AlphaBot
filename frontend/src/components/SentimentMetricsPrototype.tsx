@@ -79,7 +79,7 @@ const METRIC_CONFIGS: MetricConfig[] = [
     name: '比率指标(%)',
     unit: '%',
     icon: Gauge,
-    threshold: 6.5,
+    threshold: 4.4,
     description: '观察市场核心情绪比率，包含涨停总数占上涨家数比。',
     series: [
       { key: 'advanceRate', name: '涨停晋级率', color: '#3b82f6' },
@@ -92,7 +92,7 @@ const METRIC_CONFIGS: MetricConfig[] = [
     name: '收益率(%)',
     unit: '%',
     icon: TrendingUp,
-    threshold: 4.2,
+    threshold: 0.7,
     description: '用于观察强势股次日反馈与中位收益波动。',
     series: [
       { key: 'avgReturn', name: '平均收益', color: '#3b82f6', isPrimary: true },
@@ -105,7 +105,7 @@ const METRIC_CONFIGS: MetricConfig[] = [
     name: '数量指标',
     unit: '家',
     icon: BarChart3,
-    threshold: 42,
+    threshold: 106,
     description: '观察不同梯队个股数量变化与突破密集区。',
     series: [
       { key: 'firstBoardCount', name: '首板数量', color: '#3b82f6', isPrimary: true },
@@ -118,7 +118,7 @@ const METRIC_CONFIGS: MetricConfig[] = [
     name: '金额(亿)',
     unit: '亿',
     icon: CircleDollarSign,
-    threshold: 180,
+    threshold: 29281.2,
     description: '观察成交额与资金强弱，已接入真实市场成交与资金口径。',
     series: [
       { key: 'turnoverAmount', name: '总成交额', color: '#3b82f6', isPrimary: true },
