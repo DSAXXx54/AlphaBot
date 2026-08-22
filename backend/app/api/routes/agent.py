@@ -65,7 +65,7 @@ class AgentMessageRequest(BaseModel):
     """智能体消息请求"""
     content: str
     session_id: Optional[str] = None
-    enable_web_search: Optional[bool] = False
+    enable_web_search: Optional[bool] = None
     stream: Optional[bool] = False
     model: Optional[str] = None
     forced_role: Optional[str] = None
@@ -208,7 +208,7 @@ async def stream_agent_response(
     session_id: str,
     db: Session,
     user: User,
-    enable_web_search: bool = False,
+    enable_web_search: Optional[bool] = None,
     model: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[str, None]:

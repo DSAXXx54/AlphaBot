@@ -893,7 +893,7 @@ class AgentService:
         message: ChannelMessage,
         db: Session,
         user: User,
-        enable_web_search: bool = False,
+        enable_web_search: Optional[bool] = None,
         model: Optional[str] = None,
     ) -> ChannelReply:
         """
@@ -910,9 +910,9 @@ class AgentService:
         if isinstance(meta_forced_role, str) and meta_forced_role.strip():
             forced_role = meta_forced_role.strip()
 
-        # 若未显式开启 enable_web_search，则使用渠道默认策略
-        if not enable_web_search and cfg.allow_web_search:
-            enable_web_search = True
+        # 仅在调用方未显式指定时，才使用渠道默认策略。
+        if enable_web_search is None:
+            enable_web_search = cfg.allow_web_search
 
         # 从渠道元数据中提取通知目标，用于预警触发时主动下行消息
         notify_channel: Optional[Dict[str, Any]] = None
@@ -927,7 +927,7 @@ class AgentService:
             session_id=message.session_id,
             db=db,
             user=user,
-            enable_web_search=enable_web_search,
+            enable_web_search=bool(enable_web_search),
             model=model,
             forced_role=forced_role,
             notify_channel=notify_channel,
