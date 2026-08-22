@@ -54,3 +54,13 @@ export function normalizePublishedContent(content: string): string {
 
   return lines.join('\n');
 }
+
+export function hasDisclaimerContent(content: string): boolean {
+  const normalized = String(content || '').replace(/\s+/g, '');
+  return (
+    normalized.includes('免责申明') ||
+    normalized.includes('免责声明') ||
+    (normalized.includes('仅供研究参考') && normalized.includes('不构成投资建议')) ||
+    (normalized.includes('市场有风险') && normalized.includes('投资需谨慎'))
+  );
+}

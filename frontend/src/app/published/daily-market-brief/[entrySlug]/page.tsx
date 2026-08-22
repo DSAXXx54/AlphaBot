@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import React, { useEffect, useState } from 'react';
 import { RichMarkdown } from '@/components/markdown/RichMarkdown';
-import { normalizePublishedContent } from '@/app/published/content';
+import { hasDisclaimerContent, normalizePublishedContent } from '@/app/published/content';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -64,6 +64,9 @@ export default function DailyMarketBriefEntryPage({ params }: { params: Promise<
     );
   }
 
+  const normalizedContent = normalizePublishedContent(payload.content);
+  const shouldRenderAlphaBotDisclaimer = !hasDisclaimerContent(normalizedContent);
+
   return (
     <main className="container mx-auto px-4 py-8">
       <div className="mx-auto mb-6 flex max-w-3xl items-center justify-between gap-4">
@@ -83,17 +86,19 @@ export default function DailyMarketBriefEntryPage({ params }: { params: Promise<
 
       <div className="mx-auto max-w-3xl">
         <RichMarkdown
-          content={normalizePublishedContent(payload.content)}
+          content={normalizedContent}
           className="prose prose-slate max-w-none dark:prose-invert"
         />
 
-        <div className="mt-8 rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm leading-6 text-muted-foreground">
-          <div className="font-medium text-foreground">AlphaBot 声明</div>
-          <p className="mt-1">
-            本日报由 AlphaBot 基于公开市场数据、已启用技能与工具链自动生成，仅供研究与信息参考，不构成任何投资建议。
-            市场有风险，决策请结合自身判断与风险承受能力。
-          </p>
-        </div>
+        {shouldRenderAlphaBotDisclaimer ? (
+          <div className="mt-8 rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm leading-6 text-muted-foreground">
+            <div className="font-medium text-foreground">AlphaBot 声明</div>
+            <p className="mt-1">
+              本日报由 AlphaBot 基于公开市场数据、已启用技能与工具链自动生成，仅供研究与信息参考，不构成任何投资建议。
+              市场有风险，决策请结合自身判断与风险承受能力。
+            </p>
+          </div>
+        ) : null}
       </div>
     </main>
   );
