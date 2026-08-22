@@ -2,20 +2,22 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import StockSearch from '../components/StockSearch';
-import StockDetail from '../components/StockDetail';
-import StockChart from '../components/StockChart';
-import AIAnalysis from '../components/AIAnalysis';
-import SavedStocks from '../components/SavedStocks';
-import CacheControl from '../components/CacheControl';
-import ChangePasswordDialog from '../components/ChangePasswordDialog';
 import { StockInfo } from '../types';
 import { ChartLine, Search, Settings, Info, Bot, LogIn, User, LogOut, Key, Flame, Trophy, Sparkles } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import { useAccounts } from '@/lib/contexts/AccountContext';
-import AccountSwitcher from '@/components/AccountSwitcher';
+
+const StockSearch = dynamic(() => import('../components/StockSearch'), { ssr: false });
+const StockDetail = dynamic(() => import('../components/StockDetail'), { ssr: false });
+const StockChart = dynamic(() => import('../components/StockChart'), { ssr: false });
+const AIAnalysis = dynamic(() => import('../components/AIAnalysis'), { ssr: false });
+const SavedStocks = dynamic(() => import('../components/SavedStocks'), { ssr: false });
+const CacheControl = dynamic(() => import('../components/CacheControl'), { ssr: false });
+const ChangePasswordDialog = dynamic(() => import('../components/ChangePasswordDialog'), { ssr: false });
+const AccountSwitcher = dynamic(() => import('@/components/AccountSwitcher'), { ssr: false });
 
 export default function Home() {
   const router = useRouter();
@@ -233,6 +235,12 @@ export default function Home() {
             >
               问财
             </a>
+            <Link
+              href="/published/daily-market-brief"
+              className="text-muted-foreground hover:text-foreground"
+            >
+              市场日报
+            </Link>
             <a
               href="https://github.com/x-pai/alphabot"
               target="_blank"

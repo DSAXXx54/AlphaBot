@@ -4,7 +4,7 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional, Awaitable
 
 from sqlalchemy.orm import Session
@@ -15,6 +15,7 @@ from app.models.user import User
 from app.services.agent_service import AgentService
 from app.services.llm_registry import LLMRegistry, LLMProfileName
 from app.middleware.logging import logger
+from app.services.notification_service import send_channel_message
 
 
 def _slugify(value: str) -> str:
@@ -113,6 +114,7 @@ class AutomationService:
         items: list[Dict[str, Any]] = []
         if not os.path.exists(cls.published_dir()):
             return items
+        cutoff = datetime.now() - timedelta(days=30)
 
         for filename in os.listdir(cls.published_dir()):
             if not filename.endswith(".json"):
@@ -127,6 +129,13 @@ class AutomationService:
             metadata = payload.get("metadata") or {}
             if (metadata.get("collection_slug") or "") != collection_slug:
                 continue
+            published_at = payload.get("published_at")
+            try:
+                published_dt = datetime.fromisoformat(str(published_at))
+            except Exception:
+                continue
+            if published_dt < cutoff:
+                continue
 
             entry_slug = str(metadata.get("entry_slug") or "").strip()
             if not entry_slug:
@@ -136,7 +145,7 @@ class AutomationService:
                 {
                     "entry_slug": entry_slug,
                     "title": payload.get("title"),
-                    "published_at": payload.get("published_at"),
+                    "published_at": published_at,
                     "url": cls.build_public_report_url(collection_slug, entry_slug),
                 }
             )
@@ -157,7 +166,7 @@ class AutomationService:
         return "市场复盘"
 
     @classmethod
-    def _normalize_brief(cls, brief: str, max_chars: int = 12) -> str:
+    def _normalize_brief(cls, brief: str, max_chars: int = 18) -> str:
         normalized = re.sub(r"\s+", "", str(brief or ""))
         normalized = re.sub(r"[`#*_>\[\]\(\)]+", "", normalized).strip("，。；：,:、 ")
         if not normalized:
@@ -173,7 +182,7 @@ class AutomationService:
 
         prompt = (
             "请为下面这份中文市场复盘/报告提炼一个极短标题短语，要求：\n"
-            "1. 不超过12个汉字；\n"
+            "1. 不超过18个汉字；\n"
             "2. 不带日期、不带标点、不带引号；\n"
             "3. 直接输出短语本身，不要解释。\n\n"
             f"内容：\n{body[:4000]}"
@@ -288,6 +297,7 @@ class AutomationService:
             publish_title_template = str(params.get("publish_title") or "{date} · {brief}")
             enable_web_search = bool(params.get("enable_web_search"))
             mcp_servers = params.get("mcp_servers") if isinstance(params.get("mcp_servers"), list) else []
+            notify_channel = params.get("notify_channel") if isinstance(params.get("notify_channel"), dict) else None
 
             account_context = None
             account_id = params.get("account_id")
@@ -379,6 +389,27 @@ class AutomationService:
                 {"published_url": cls.build_public_report_url(collection_slug, entry_slug)},
             )
 
+            notification_result = None
+            notification_target = None
+            if notify_channel and notify_channel.get("type"):
+                notification_target = notify_channel.get("chat_id")
+                if str(notify_channel.get("type")).lower() == "webhook":
+                    notification_target = notify_channel.get("webhook_url")
+            if notify_channel and notify_channel.get("type") and notification_target:
+                notify_text = (
+                    f"{published['title']}\n"
+                    f"已发布：{cls.build_public_report_url(collection_slug, entry_slug)}"
+                )
+                try:
+                    notification_result = await send_channel_message(
+                        str(notify_channel.get("type")),
+                        notification_target,
+                        notify_text,
+                    )
+                except Exception as exc:
+                    logger.error("自动化发布通知发送失败: %s", exc)
+                    notification_result = {"success": False, "error": str(exc)}
+
             return {
                 "task_id": task_id,
                 "session_id": automation_session_id,
@@ -393,6 +424,7 @@ class AutomationService:
                 "content_preview": reply.content[:500],
                 "tool_outputs": reply.tool_outputs or [],
                 "agent_metadata": agent_metadata,
+                "notification_result": notification_result,
                 "published_at": published["published_at"],
             }
         except Exception as exc:

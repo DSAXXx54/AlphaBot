@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { RichMarkdown } from '@/components/markdown/RichMarkdown';
+import { normalizePublishedContent } from '@/app/published/content';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
@@ -70,7 +71,10 @@ export default function PublishedReportPage({ params }: { params: Promise<{ slug
         </p>
       </div>
 
-      <RichMarkdown content={payload.content} className="prose prose-slate max-w-none dark:prose-invert" />
+      <RichMarkdown
+        content={normalizePublishedContent(payload.content)}
+        className="prose prose-slate max-w-none dark:prose-invert"
+      />
     </main>
   );
 }

@@ -21,6 +21,8 @@ export interface AutomationConfig {
   publishCollectionSlug: string;
   publishSlug: string;
   selectedMcpServerIds: string[];
+  notifyChannelType: string;
+  notifyChannelChatId: string;
 }
 
 interface AccountContext {
@@ -369,6 +371,44 @@ export function AgentInspector({
                   已发布：{publishUrl}
                 </a>
               )}
+            </div>
+          </section>
+
+          <section className="rounded-[18px] border border-border/80 bg-card/95 p-3">
+            <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+              <Send className="h-4 w-4" />
+              推送通知
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-[11px] text-muted-foreground">通知渠道</label>
+                <select
+                  value={config.notifyChannelType}
+                  onChange={(e) => onConfigChange({ notifyChannelType: e.target.value })}
+                  className="w-full rounded-xl border border-border bg-background px-3 py-2 text-[12px] text-foreground outline-none"
+                >
+                  <option value="">不推送</option>
+                  <option value="feishu">飞书</option>
+                  <option value="telegram">Telegram</option>
+                  <option value="webhook">Webhook</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-muted-foreground">
+                  {config.notifyChannelType === 'webhook' ? 'Webhook URL' : 'Chat ID'}
+                </label>
+                <input
+                  value={config.notifyChannelChatId}
+                  onChange={(e) => onConfigChange({ notifyChannelChatId: e.target.value })}
+                  className="w-full rounded-xl border border-border bg-background px-3 py-2 text-[12px] text-foreground outline-none"
+                  placeholder={config.notifyChannelType === 'webhook' ? 'https://example.com/webhook' : '推送目标 chat_id'}
+                />
+                <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
+                  配置后，日报发布成功会自动推送标题和访问链接。Webhook 会以 JSON
+                  <code className="mx-1">{'{"text":"..."}'}</code>
+                  发送。
+                </p>
+              </div>
             </div>
           </section>
 

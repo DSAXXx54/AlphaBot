@@ -9,6 +9,7 @@ class ChannelType(str, Enum):
 
     WEB_CHAT = "web_chat"
     MCP = "mcp"
+    WEBHOOK = "webhook"
     FEISHU = "feishu"
     TELEGRAM = "telegram"
     EMAIL = "email"
@@ -33,4 +34,3 @@ class ChannelReply(BaseModel):
     content: str
     tool_outputs: Optional[List[str]] = None
     metadata: Dict[str, Any] = {}
-

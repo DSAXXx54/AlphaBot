@@ -1,7 +1,11 @@
 'use client';
 
+import Link from 'next/link';
 import React, { useEffect, useState } from 'react';
 import { RichMarkdown } from '@/components/markdown/RichMarkdown';
+import { normalizePublishedContent } from '@/app/published/content';
+import { ArrowLeft } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
@@ -45,7 +49,7 @@ export default function DailyMarketBriefEntryPage({ params }: { params: Promise<
 
   if (error) {
     return (
-      <main className="mx-auto max-w-4xl px-6 py-12">
+      <main className="container mx-auto px-4 py-8">
         <h1 className="text-xl font-semibold text-foreground">发布内容不可用</h1>
         <p className="mt-3 text-sm text-muted-foreground">{error}</p>
       </main>
@@ -54,23 +58,35 @@ export default function DailyMarketBriefEntryPage({ params }: { params: Promise<
 
   if (!payload) {
     return (
-      <main className="mx-auto max-w-4xl px-6 py-12">
+      <main className="container mx-auto px-4 py-8">
         <p className="text-sm text-muted-foreground">正在加载发布内容...</p>
       </main>
     );
   }
 
   return (
-    <main className="mx-auto max-w-4xl px-6 py-12">
-      <div className="mb-8">
-        <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Published Report</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em] text-foreground">{payload.title}</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          发布时间：{new Date(payload.published_at).toLocaleString()}
-        </p>
+    <main className="container mx-auto px-4 py-8">
+      <div className="mx-auto mb-6 flex max-w-3xl items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold dark:text-white">{payload.title}</h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            发布时间：{new Date(payload.published_at).toLocaleString()}
+          </p>
+        </div>
+        <Link href="/published/daily-market-brief">
+          <Button variant="outline" size="sm" className="flex items-center">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            返回日报
+          </Button>
+        </Link>
       </div>
 
-      <RichMarkdown content={payload.content} className="prose prose-slate max-w-none dark:prose-invert" />
+      <div className="mx-auto max-w-3xl">
+        <RichMarkdown
+          content={normalizePublishedContent(payload.content)}
+          className="prose prose-slate max-w-none dark:prose-invert"
+        />
+      </div>
     </main>
   );
 }

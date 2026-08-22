@@ -2,6 +2,8 @@
 
 import Link from 'next/link';
 import React, { useEffect, useState } from 'react';
+import { ArrowLeft } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
@@ -42,10 +44,20 @@ export default function DailyMarketBriefCollectionPage() {
   }, []);
 
   return (
-    <main className="mx-auto max-w-4xl px-6 py-12">
-      <div className="mb-8">
-        <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Published Collection</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em] text-foreground">每日市场复盘</h1>
+    <main className="container mx-auto px-4 py-8">
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold dark:text-white">市场日报</h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            查看最近 30 天自动发布的每日市场复盘。
+          </p>
+        </div>
+        <Link href="/">
+          <Button variant="outline" size="sm" className="flex items-center">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            返回主页
+          </Button>
+        </Link>
       </div>
 
       {error ? (
@@ -58,7 +70,7 @@ export default function DailyMarketBriefCollectionPage() {
             <Link
               key={item.entry_slug}
               href={`/published/daily-market-brief/${item.entry_slug}`}
-              className="block rounded-2xl border border-border bg-card/90 px-4 py-3 transition-colors hover:border-primary/30 hover:bg-primary/5"
+              className="block rounded-lg border border-border bg-card px-4 py-3 transition-colors hover:border-blue-200 hover:bg-blue-50/40 dark:hover:border-blue-900 dark:hover:bg-blue-950/20"
             >
               <div className="text-sm font-medium text-foreground">{item.title}</div>
               <div className="mt-1 text-xs text-muted-foreground">

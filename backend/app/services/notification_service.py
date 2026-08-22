@@ -85,6 +85,25 @@ async def _send_feishu_message(chat_id: str, text: str) -> bool:
         return False
 
 
+async def _send_webhook_message(webhook_url: str, text: str) -> bool:
+    if not webhook_url:
+        logger.warning("发送 Webhook 消息跳过: webhook_url 为空。")
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                webhook_url,
+                json={
+                    "text": text,
+                },
+            )
+            resp.raise_for_status()
+            return True
+    except Exception as e:  # noqa: BLE001
+        logger.error("发送 Webhook 通知失败: %s", e)
+        return False
+
+
 async def notify_alert(rule: AlertRule, trigger: AlertTrigger) -> None:
     """
     根据 AlertRule 中记录的 notify_channel 信息，主动下发预警通知。
@@ -104,16 +123,18 @@ async def notify_alert(rule: AlertRule, trigger: AlertTrigger) -> None:
             return
 
         ch_type = (notify_channel.get("type") or "").lower()
-        chat_id = notify_channel.get("chat_id")
-        if not chat_id:
+        target = notify_channel.get("chat_id") or notify_channel.get("webhook_url")
+        if not target:
             return
 
         text = trigger.message or f"{rule.symbol} 预警触发。"
 
         if ch_type == "telegram":
-            await _send_telegram_message(chat_id, text)
+            await _send_telegram_message(target, text)
         elif ch_type == "feishu":
-            await _send_feishu_message(chat_id, text)
+            await _send_feishu_message(str(target), text)
+        elif ch_type == "webhook":
+            await _send_webhook_message(str(target), text)
     except Exception as e:  # noqa: BLE001
         logger.error("notify_alert 执行失败: %s", e)
 
@@ -122,7 +143,7 @@ async def send_channel_message(channel: str, chat_id: Any, text: str) -> Dict[st
     """
     显式的发送渠道消息能力，供 Skill 调用。
 
-    默认仅支持 telegram / feishu，且由业务层控制调用场景。
+    默认支持 telegram / feishu / webhook，且由业务层控制调用场景。
     """
     ch = (channel or "").lower()
     if not text:
@@ -135,5 +156,9 @@ async def send_channel_message(channel: str, chat_id: Any, text: str) -> Dict[st
     if ch == "feishu":
         success = await _send_feishu_message(str(chat_id), text)
         return {"success": success, "channel": "feishu", "chat_id": chat_id}
+
+    if ch == "webhook":
+        success = await _send_webhook_message(str(chat_id), text)
+        return {"success": success, "channel": "webhook", "webhook_url": chat_id}
 
     return {"success": False, "error": f"不支持的渠道类型: {channel}"}

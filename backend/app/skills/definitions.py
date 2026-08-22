@@ -356,8 +356,8 @@ INTERNAL_TOOL_SPECS: Dict[str, ToolSpec] = {
         category="notification",
         description="向当前对话渠道发送一条通知消息。若未指定 channel/chat_id，则默认使用当前会话的渠道和群/会话 ID。",
         parameters={
-            "channel": {"type": "string", "description": "渠道类型：telegram 或 feishu，可选；不填则使用当前渠道。", "enum": ["telegram", "feishu"]},
-            "chat_id": {"type": "string", "description": "目标 chat_id，可选；不填则使用当前会话绑定的 chat_id。"},
+            "channel": {"type": "string", "description": "渠道类型：telegram、feishu 或 webhook，可选；不填则使用当前渠道。", "enum": ["telegram", "feishu", "webhook"]},
+            "chat_id": {"type": "string", "description": "目标 chat_id；若 channel=webhook，则这里填写 webhook_url。可选；不填则使用当前会话绑定的 chat_id。"},
             "text": {"type": "string", "description": "要发送的文本内容。"},
         },
         required=["text"],

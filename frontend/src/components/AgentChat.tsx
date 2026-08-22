@@ -125,6 +125,8 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
     publishCollectionSlug: 'daily-market-brief',
     publishSlug: 'review-{date_compact}',
     selectedMcpServerIds: [],
+    notifyChannelType: '',
+    notifyChannelChatId: '',
   });
 
   const appendRunEvent = useCallback((event: Omit<AgentRunEvent, 'id' | 'createdAt'>) => {
@@ -280,6 +282,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
 
   const hydrateAutomationTask = useCallback((task: TaskInfo) => {
     const params = (task.params || {}) as Record<string, unknown>;
+    const notifyChannel = params.notify_channel as Record<string, unknown> | undefined;
     setAutomationTaskInfo(task);
     setAutomationTaskId(task.task_id);
     setAutomationConfig((prev) => ({
@@ -296,6 +299,16 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
       selectedMcpServerIds: Array.isArray(params.mcp_servers)
         ? params.mcp_servers.map((item) => String(item)).filter(Boolean)
         : prev.selectedMcpServerIds,
+      notifyChannelType:
+        typeof notifyChannel?.type === 'string'
+          ? String(notifyChannel.type)
+          : prev.notifyChannelType,
+      notifyChannelChatId:
+        typeof notifyChannel?.chat_id === 'string' ||
+        typeof notifyChannel?.chat_id === 'number' ||
+        typeof notifyChannel?.webhook_url === 'string'
+          ? String(notifyChannel?.webhook_url ?? notifyChannel?.chat_id)
+          : prev.notifyChannelChatId,
     }));
 
     const publishedUrl =
@@ -1245,6 +1258,18 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
         publish_collection_slug: publishCollectionSlug,
         publish_slug: publishSlug,
         mcp_servers: automationConfig.selectedMcpServerIds,
+        notify_channel:
+          automationConfig.notifyChannelType.trim() && automationConfig.notifyChannelChatId.trim()
+            ? automationConfig.notifyChannelType.trim() === 'webhook'
+              ? {
+                  type: 'webhook',
+                  webhook_url: automationConfig.notifyChannelChatId.trim(),
+                }
+              : {
+                  type: automationConfig.notifyChannelType.trim(),
+                  chat_id: automationConfig.notifyChannelChatId.trim(),
+                }
+            : undefined,
         model: model || undefined,
         account_id: selectedAccount?.id,
         account_provider: selectedAccount?.provider,
