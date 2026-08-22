@@ -41,6 +41,13 @@ interface AgentInspectorProps {
   savedTaskId: string | null;
   publishUrl: string | null;
   feedbackMessage: string | null;
+  automationTasks?: Array<{
+    task_id: string;
+    description: string;
+    status?: string;
+    current_stage?: string | null;
+    next_run?: string;
+  }>;
   taskStatus?: string | null;
   taskStage?: string | null;
   taskStatusDetail?: string | null;
@@ -57,6 +64,7 @@ interface AgentInspectorProps {
   onRefreshSkills: () => void;
   onSave: () => void;
   onRunNow: () => void;
+  onSelectTask?: (taskId: string) => void;
 }
 
 export function AgentInspector({
@@ -71,6 +79,7 @@ export function AgentInspector({
   savedTaskId,
   publishUrl,
   feedbackMessage,
+  automationTasks = [],
   taskStatus,
   taskStage,
   taskStatusDetail,
@@ -83,6 +92,7 @@ export function AgentInspector({
   onRefreshSkills,
   onSave,
   onRunNow,
+  onSelectTask,
 }: AgentInspectorProps) {
   return (
     <div className={embedded ? 'flex h-full min-h-0 flex-col' : 'hidden h-full min-h-0 xl:block xl:w-[320px] 2xl:w-[348px]'}>
@@ -93,6 +103,37 @@ export function AgentInspector({
         </div>
 
         <div className="min-h-0 flex-1 space-y-3 overflow-auto rounded-[22px] border border-border/70 bg-background/92 p-3 shadow-[0_8px_24px_rgba(15,23,42,0.05)] backdrop-blur">
+          {automationTasks.length > 0 && (
+            <section className="rounded-[18px] border border-border/80 bg-card/95 p-3">
+              <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
+                <Bot className="h-4 w-4" />
+                自动化任务
+              </div>
+              <div className="space-y-2">
+                {automationTasks.map((task) => {
+                  const isActive = task.task_id === savedTaskId;
+                  return (
+                    <button
+                      key={task.task_id}
+                      type="button"
+                      onClick={() => onSelectTask?.(task.task_id)}
+                      className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${
+                        isActive ? 'bg-primary/8 text-foreground' : 'bg-background text-foreground hover:bg-muted'
+                      }`}
+                    >
+                      <div className="truncate text-[12px] font-medium">{task.description}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
+                        <span>{task.status || 'pending'}</span>
+                        {task.current_stage ? <span>· {task.current_stage}</span> : null}
+                        {task.next_run ? <span>· {new Date(task.next_run).toLocaleString()}</span> : null}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
           <section className="rounded-[18px] border border-border/80 bg-card/95 p-3">
             <div className="mb-2 flex items-center gap-2 text-[13px] font-medium text-foreground">
               <CheckCircle2 className="h-4 w-4" />

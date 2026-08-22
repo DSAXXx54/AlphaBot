@@ -13,6 +13,8 @@ from app.channels.base import ChannelMessage
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.services.agent_service import AgentService
+from app.services.llm_registry import LLMRegistry, LLMProfileName
+from app.middleware.logging import logger
 
 
 def _slugify(value: str) -> str:
@@ -151,15 +153,59 @@ class AutomationService:
             cleaned = re.sub(r"`+", "", cleaned)
             if not cleaned:
                 continue
-            if len(cleaned) > 42:
-                cleaned = f"{cleaned[:42].rstrip('，。；：,: ')}..."
-            return cleaned
-        return "市场复盘简报"
+            return cls._normalize_brief(cleaned)
+        return "市场复盘"
 
     @classmethod
-    def build_publish_title(cls, template: str, now: datetime, content: str) -> str:
+    def _normalize_brief(cls, brief: str, max_chars: int = 12) -> str:
+        normalized = re.sub(r"\s+", "", str(brief or ""))
+        normalized = re.sub(r"[`#*_>\[\]\(\)]+", "", normalized).strip("，。；：,:、 ")
+        if not normalized:
+            return "市场复盘"
+        return normalized[:max_chars].rstrip("，。；：,:、 ") or "市场复盘"
+
+    @classmethod
+    async def summarize_title_brief(cls, content: str) -> str:
+        fallback = cls.extract_title_brief(content)
+        body = str(content or "").strip()
+        if not body:
+            return fallback
+
+        prompt = (
+            "请为下面这份中文市场复盘/报告提炼一个极短标题短语，要求：\n"
+            "1. 不超过12个汉字；\n"
+            "2. 不带日期、不带标点、不带引号；\n"
+            "3. 直接输出短语本身，不要解释。\n\n"
+            f"内容：\n{body[:4000]}"
+        )
+        try:
+            llm_client = LLMRegistry.get_client(
+                profile=LLMProfileName.RESEARCH,
+                max_tokens_override=32,
+            )
+            response = await llm_client.chat_completion(
+                messages=[
+                    {"role": "system", "content": "你擅长为金融复盘内容提炼极短标题。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                max_tokens=32,
+            )
+            brief = (
+                response.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            normalized = cls._normalize_brief(brief)
+            return normalized or fallback
+        except Exception as exc:
+            logger.warning("生成发布标题 brief 失败，回退规则摘要: %s", exc)
+            return fallback
+
+    @classmethod
+    async def build_publish_title(cls, template: str, now: datetime, content: str) -> str:
         normalized = (template or "{date} · {brief}").strip()
-        brief = cls.extract_title_brief(content)
+        brief = await cls.summarize_title_brief(content)
         if "{" in normalized and "}" in normalized:
             rendered = _render_template(normalized, now).replace("{brief}", brief)
             return rendered.strip()
@@ -300,7 +346,7 @@ class AutomationService:
                     },
                 )
 
-            publish_title = cls.build_publish_title(
+            publish_title = await cls.build_publish_title(
                 publish_title_template,
                 now,
                 reply.content,

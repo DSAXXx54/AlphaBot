@@ -109,6 +109,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
   const [automationPublishUrl, setAutomationPublishUrl] = useState<string | null>(null);
   const [automationFeedback, setAutomationFeedback] = useState<string | null>(null);
   const [automationTaskInfo, setAutomationTaskInfo] = useState<TaskInfo | null>(null);
+  const [automationTasks, setAutomationTasks] = useState<TaskInfo[]>([]);
   const [isDeletingAutomation, setIsDeletingAutomation] = useState(false);
   const [isSavingAutomation, setIsSavingAutomation] = useState(false);
   const [isRunningAutomation, setIsRunningAutomation] = useState(false);
@@ -309,13 +310,19 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
     const response = await getAllTasks();
     if (!response.success || !response.data) return;
 
-    const task = [...response.data]
+    const tasks = [...response.data]
       .filter((item) => item.task_type === 'skill_publish_job')
       .sort((a, b) => {
         const aTime = new Date(a.last_run || a.next_run || 0).getTime();
         const bTime = new Date(b.last_run || b.next_run || 0).getTime();
         return bTime - aTime;
-      })[0];
+      });
+    setAutomationTasks(tasks);
+
+    const preferredTask = automationTaskId
+      ? tasks.find((item) => item.task_id === automationTaskId)
+      : null;
+    const task = preferredTask || tasks[0];
 
     if (task) {
       hydrateAutomationTask(task);
@@ -324,7 +331,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
       setAutomationTaskInfo(null);
       setAutomationPublishUrl(null);
     }
-  }, [hydrateAutomationTask, isAuthenticated]);
+  }, [automationTaskId, hydrateAutomationTask, isAuthenticated]);
 
   useEffect(() => {
     void loadAutomationTask();
@@ -1474,6 +1481,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
                     savedTaskId={automationTaskId}
                     publishUrl={automationPublishUrl}
                     feedbackMessage={automationFeedback}
+                    automationTasks={automationTasks}
                     taskStatus={automationTaskInfo?.status || null}
                     taskStage={automationTaskInfo?.current_stage || null}
                     taskStatusDetail={automationTaskInfo?.status_detail || null}
@@ -1486,6 +1494,13 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
                     onRefreshSkills={() => void loadSkillOptions()}
                     onSave={handleSaveAutomation}
                     onRunNow={handleRunAutomationNow}
+                    onSelectTask={(taskId) => {
+                      const task = automationTasks.find((item) => item.task_id === taskId);
+                      if (task) {
+                        hydrateAutomationTask(task);
+                        setAutomationFeedback(null);
+                      }
+                    }}
                   />
                 </section>
               </div>
