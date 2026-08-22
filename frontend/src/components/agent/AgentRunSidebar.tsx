@@ -15,6 +15,7 @@ interface AgentRunSidebarProps {
   activeView: 'conversation' | 'automation';
   currentSession: string | null;
   automationLabel: string;
+  canAccessAutomation?: boolean;
   isFetchingSessions: boolean;
   sessions: Session[];
   onNewChat: () => void;
@@ -28,6 +29,7 @@ export function AgentRunSidebar({
   activeView,
   currentSession,
   automationLabel,
+  canAccessAutomation = false,
   isFetchingSessions,
   sessions,
   onNewChat,
@@ -66,23 +68,25 @@ export function AgentRunSidebar({
           <Plus className="h-4 w-4" />
           新建任务
         </Button>
-        <button
-          type="button"
-          className={`mt-3 flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition-colors ${
-            activeView === 'automation'
-              ? 'bg-primary/8 text-foreground'
-              : 'text-foreground hover:bg-muted/70'
-          }`}
-          onClick={onOpenAutomation}
-        >
-          <span className={`rounded-xl p-2 ${activeView === 'automation' ? 'bg-primary/12 text-primary' : 'bg-muted text-muted-foreground'}`}>
-            <Bot className="h-4 w-4" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-medium">自动化</span>
-            <span className="mt-1 block truncate text-xs text-muted-foreground">{automationLabel}</span>
-          </span>
-        </button>
+        {canAccessAutomation ? (
+          <button
+            type="button"
+            className={`mt-3 flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition-colors ${
+              activeView === 'automation'
+                ? 'bg-primary/8 text-foreground'
+                : 'text-foreground hover:bg-muted/70'
+            }`}
+            onClick={onOpenAutomation}
+          >
+            <span className={`rounded-xl p-2 ${activeView === 'automation' ? 'bg-primary/12 text-primary' : 'bg-muted text-muted-foreground'}`}>
+              <Bot className="h-4 w-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium">自动化</span>
+              <span className="mt-1 block truncate text-xs text-muted-foreground">{automationLabel}</span>
+            </span>
+          </button>
+        ) : null}
       </div>
 
       <ScrollArea className="min-h-0 flex-1">

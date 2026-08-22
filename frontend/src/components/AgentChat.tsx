@@ -76,6 +76,8 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
   void onSelectStock;
   const { isAuthenticated, user } = useAuth();
   const { selectedAccount } = useAccounts();
+  const canUseWebSearch = user && user.points >= 2000;
+  const canAccessAutomation = Boolean(user?.is_admin);
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [currentSession, setCurrentSession] = useState<string | null>(null);
@@ -319,7 +321,13 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
   }, []);
 
   const loadAutomationTask = useCallback(async () => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || !canAccessAutomation) {
+      setAutomationTasks([]);
+      setAutomationTaskId(null);
+      setAutomationTaskInfo(null);
+      setAutomationPublishUrl(null);
+      return;
+    }
     const response = await getAllTasks();
     if (!response.success || !response.data) return;
 
@@ -344,7 +352,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
       setAutomationTaskInfo(null);
       setAutomationPublishUrl(null);
     }
-  }, [automationTaskId, hydrateAutomationTask, isAuthenticated]);
+  }, [automationTaskId, canAccessAutomation, hydrateAutomationTask, isAuthenticated]);
 
   useEffect(() => {
     void loadAutomationTask();
@@ -1225,8 +1233,11 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
     void submitMessage(searchQuery);
   };
 
-  // 检查用户是否有足够积分使用联网搜索
-  const canUseWebSearch = user && user.points >= 2000;
+  useEffect(() => {
+    if (!canAccessAutomation && activeView === 'automation') {
+      setActiveView('conversation');
+    }
+  }, [activeView, canAccessAutomation]);
 
   const latestToolOutputs = [...messages]
     .reverse()
@@ -1421,12 +1432,15 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
           activeView={activeView}
           currentSession={currentSession}
           automationLabel={automationTaskInfo?.description || automationConfig.taskName}
+          canAccessAutomation={canAccessAutomation}
           isFetchingSessions={isFetchingSessions}
           sessions={sessionList}
           onNewChat={handleNewChat}
           onOpenAutomation={() => {
-            setActiveView('automation');
-            setShowSidebar(false);
+            if (canAccessAutomation) {
+              setActiveView('automation');
+              setShowSidebar(false);
+            }
           }}
           onRefresh={handleRefreshWorkspace}
           onSelectSession={switchSession}
@@ -1444,13 +1458,18 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
             streamEnabled={streamEnabled}
             webSearchEnabled={webSearchEnabled}
             canUseWebSearch={!!canUseWebSearch}
+            canAccessAutomation={canAccessAutomation}
             model={model}
             availableModels={availableModels}
             onModelChange={setModel}
             onToggleStream={() => setStreamEnabled(!streamEnabled)}
             onToggleWebSearch={toggleWebSearch}
             onOpenRuns={() => setShowSidebar(!showSidebar)}
-            onOpenInspector={() => setActiveView('automation')}
+            onOpenInspector={() => {
+              if (canAccessAutomation) {
+                setActiveView('automation');
+              }
+            }}
           />
 
           <div className="min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top,_rgba(37,99,235,0.06),_transparent_26%),linear-gradient(to_bottom,_rgba(255,255,255,0.98),_rgba(248,250,252,1))] dark:bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.10),_transparent_20%),linear-gradient(to_bottom,_#020617,_#0f172a)]">
@@ -1458,7 +1477,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
               <div className="flex h-full items-center justify-center">
                 <Loader2 className="h-8 w-8 animate-spin text-primary" />
               </div>
-            ) : activeView === 'automation' ? (
+            ) : activeView === 'automation' && canAccessAutomation ? (
               <div className="mx-auto flex min-h-full w-full max-w-[1160px] flex-col px-4 py-4 sm:px-6 xl:px-8">
                 <section className="mb-4 px-1 py-1">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

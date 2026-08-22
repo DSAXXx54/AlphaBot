@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { getAllTasks, createTask, updateTask, deleteTask, runTaskNow } from '../lib/api';
+import { useAuth } from '../lib/contexts/AuthContext';
 import { TaskInfo, TaskCreate } from '../types';
 
 const TaskManager: React.FC = () => {
+  const { user } = useAuth();
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -172,6 +174,14 @@ const TaskManager: React.FC = () => {
   useEffect(() => {
     loadTasks();
   }, [loadTasks]);
+
+  if (!user?.is_admin) {
+    return (
+      <div className="py-8 text-center">
+        <p className="text-muted-foreground">只有管理员可以管理定时任务</p>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 transition-colors duration-200">

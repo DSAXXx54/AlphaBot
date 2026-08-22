@@ -15,6 +15,7 @@ interface AgentWorkspaceHeaderProps {
   streamEnabled: boolean;
   webSearchEnabled: boolean;
   canUseWebSearch: boolean;
+  canAccessAutomation?: boolean;
   model: string | null;
   availableModels: ModelOption[];
   onModelChange: (value: string | null) => void;
@@ -32,6 +33,7 @@ export function AgentWorkspaceHeader({
   streamEnabled,
   webSearchEnabled,
   canUseWebSearch,
+  canAccessAutomation = false,
   model,
   availableModels,
   onModelChange,
@@ -75,10 +77,12 @@ export function AgentWorkspaceHeader({
                 <MessageSquareText className="h-4 w-4" />
                 任务列表
               </Button>
-              <Button variant="outline" size="sm" className="gap-2 rounded-2xl border-transparent bg-muted/70 hover:bg-muted" onClick={onOpenInspector}>
-                <PanelRightOpen className="h-4 w-4" />
-                运行上下文
-              </Button>
+              {canAccessAutomation ? (
+                <Button variant="outline" size="sm" className="gap-2 rounded-2xl border-transparent bg-muted/70 hover:bg-muted" onClick={onOpenInspector}>
+                  <PanelRightOpen className="h-4 w-4" />
+                  运行上下文
+                </Button>
+              ) : null}
             </div>
           </div>
         </div>

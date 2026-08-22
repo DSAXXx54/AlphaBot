@@ -11,7 +11,7 @@ from app.utils.response import api_response
 from app.api.dependencies import check_usage_limit
 from app.utils.stock_utils import update_stock_data_with_db
 from app.services.automation_service import AutomationService
-from app.api.routes.user import get_current_user
+from app.api.routes.user import get_current_admin
 from app.models.user import User
 
 router = APIRouter()
@@ -32,14 +32,19 @@ def _compute_next_run(daily_time: Optional[str], timezone_name: Optional[str], f
         return None
 
 @router.get("", response_model=dict)
-async def get_all_tasks():
+async def get_all_tasks(
+    _current_user: User = Depends(get_current_admin),
+):
     """获取所有定时任务"""
     scheduler = SchedulerService()
     tasks = await scheduler.get_all_tasks()
     return api_response(data=tasks)
 
 @router.get("/{task_id}", response_model=dict)
-async def get_task(task_id: str):
+async def get_task(
+    task_id: str,
+    _current_user: User = Depends(get_current_admin),
+):
     """获取特定定时任务"""
     scheduler = SchedulerService()
     task = await scheduler.get_task(task_id)
@@ -50,7 +55,7 @@ async def get_task(task_id: str):
 @router.post("", response_model=dict)
 async def create_task(
     task: TaskCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin),
     _: None = Depends(check_usage_limit)
 ):
     """创建定时任务"""
@@ -108,7 +113,7 @@ async def create_task(
 async def update_task(
     task_id: str,
     task_update: TaskUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin),
     _: None = Depends(check_usage_limit)
 ):
     """更新定时任务"""
@@ -152,7 +157,10 @@ async def update_task(
     return api_response(data=updated_task)
 
 @router.delete("/{task_id}", response_model=dict)
-async def delete_task(task_id: str):
+async def delete_task(
+    task_id: str,
+    _current_user: User = Depends(get_current_admin),
+):
     """删除定时任务"""
     scheduler = SchedulerService()
     
@@ -172,7 +180,7 @@ async def delete_task(task_id: str):
 async def run_task_now(
     task_id: str,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin),
     _: None = Depends(check_usage_limit)
 ):
     """立即运行定时任务"""
