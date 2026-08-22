@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { StockInfo, StockPriceHistory, AIAnalysis, ApiResponse, CacheStats, TaskInfo, TaskCreate, TaskUpdate, WorldCupMatchDetail, WorldCupMatchSummary, WorldCupOverview, SentimentBackfillResponse, SentimentCalendarResponse, SentimentMetricsResponse, SentimentSyncDateResponse } from '../types';
-import { SavedStock, LoginForm, RegisterForm, AuthResponse, User, McpStatus, McpTokenInfo, McpTokenCreatePayload, ExternalMcpServerInfo, AccountConnection, AccountConnectionCreatePayload, AccountConnectionUpdatePayload } from '../types/user';
+import { SavedStock, LoginForm, RegisterForm, AuthResponse, User, McpStatus, McpTokenInfo, McpTokenCreatePayload, ExternalMcpServerInfo, AccountConnection, AccountConnectionCreatePayload, AccountConnectionUpdatePayload, AgentSkillInfo } from '../types/user';
 import { indexedDBCache } from './indexedDBCache';
 
 // API基础URL，优先使用环境变量，否则使用相对路径
@@ -1232,6 +1232,7 @@ export async function chatWithAgent(data: {
   enable_web_search?: boolean;
   stream?: boolean;
   model?: string;
+  forced_role?: string;
   account_context?: {
     account_id: number;
     provider: string;
@@ -1275,13 +1276,15 @@ export async function chatWithAgentStream(
     session_id?: string;
     enable_web_search?: boolean;
     model?: string;
+    forced_role?: string;
     account_context?: {
       account_id: number;
       provider: string;
       name?: string;
     };
   },
-  onMessage: (message: any) => void
+  onMessage: (message: any) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   try {
     const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
@@ -1293,6 +1296,7 @@ export async function chatWithAgentStream(
         'Content-Type': 'application/json',
         ...(token && { 'Authorization': `Bearer ${token}` })
       },
+      signal,
       body: JSON.stringify({
         ...data,
         stream: true
@@ -1343,6 +1347,13 @@ export async function chatWithAgentStream(
       }
     }
   } catch (error) {
+    if ((error as any)?.name === 'AbortError') {
+      onMessage({
+        type: 'aborted',
+        error: '已停止生成'
+      });
+      return;
+    }
     console.error('流式对话出错:', error);
     onMessage({
       type: 'error',
@@ -1363,6 +1374,60 @@ export async function getAvailableModels(): Promise<ApiResponse<{models: string[
       success: false,
       error: '获取模型列表失败'
     } as any;
+  }
+}
+
+export async function getAgentSkills(): Promise<ApiResponse<Array<{value: string; label: string; description: string; kind: string}>>> {
+  try {
+    const response = await api.get<{success: boolean, data?: any, error?: string}>('/agent/skills');
+    return response.data as any;
+  } catch (error) {
+    return {
+      success: false,
+      error: '获取 Skill 列表失败'
+    } as any;
+  }
+}
+
+export async function listAdminSkills(): Promise<ApiResponse<AgentSkillInfo[]>> {
+  try {
+    const response = await api.get<{success: boolean, data?: AgentSkillInfo[], error?: string}>('/user/admin/skills');
+    return response.data as any;
+  } catch (error) {
+    console.error('Error listing admin skills:', error);
+    return {
+      success: false,
+      error: '获取 Skill 列表失败',
+    };
+  }
+}
+
+export async function refreshAdminSkills(): Promise<ApiResponse<AgentSkillInfo[]>> {
+  try {
+    const response = await api.post<{success: boolean, data?: AgentSkillInfo[], error?: string}>('/user/admin/skills/refresh');
+    return response.data as any;
+  } catch (error) {
+    console.error('Error refreshing admin skills:', error);
+    return {
+      success: false,
+      error: '刷新 Skill 列表失败',
+    };
+  }
+}
+
+export async function updateAdminSkillStatus(skillName: string, enabled: boolean): Promise<ApiResponse<AgentSkillInfo>> {
+  try {
+    const response = await api.patch<{success: boolean, data?: AgentSkillInfo, error?: string}>(
+      `/user/admin/skills/${encodeURIComponent(skillName)}`,
+      { enabled }
+    );
+    return response.data as any;
+  } catch (error) {
+    console.error('Error updating admin skill status:', error);
+    return {
+      success: false,
+      error: '更新 Skill 状态失败',
+    };
   }
 }
 

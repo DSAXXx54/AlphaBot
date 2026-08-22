@@ -18,6 +18,7 @@ from app.core.registries import ToolRegistry
 from app.core.mcp_host import McpHostRegistry
 from app.channels.base import ChannelMessage, ChannelReply
 from app.channels.config import get_channel_config
+from app.services.custom_skill_service import CustomSkillService
 from app.skills.definitions import (
     ROLE_ALERT,
     ROLE_GENERAL,
@@ -222,6 +223,11 @@ class AgentService:
                 logger.debug("定投提醒注入跳过: %s", e)
 
         role = cls._resolve_role(user_message, forced_role)
+        if forced_role and CustomSkillService.skill_exists(forced_role):
+            role = AgentRole.RESEARCH
+            custom_skill_prompt = CustomSkillService.build_system_prompt(forced_role)
+            if custom_skill_prompt:
+                extra_system_lines.append(custom_skill_prompt)
         role_cfg = cls.ROLE_CONFIGS.get(role) or cls.ROLE_CONFIGS[AgentRole.GENERAL]
         if role_cfg.system_hint:
             extra_system_lines.append(role_cfg.system_hint)
@@ -261,10 +267,40 @@ class AgentService:
     }
     
     @classmethod
-    def get_available_tools(cls, role: Optional[AgentRole] = None) -> List[AgentTool]:
+    def _allowed_mcp_server_ids(cls, metadata: Optional[Dict[str, Any]] = None) -> Optional[set[str]]:
+        automation = (metadata or {}).get("automation")
+        if not isinstance(automation, dict):
+            return None
+
+        mcp_servers = automation.get("mcp_servers")
+        if not isinstance(mcp_servers, list):
+            return None
+
+        normalized = {
+            str(server_id).strip()
+            for server_id in mcp_servers
+            if str(server_id).strip()
+        }
+        return normalized
+
+    @classmethod
+    def _automation_max_tokens(cls, metadata: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        automation = (metadata or {}).get("automation")
+        if not isinstance(automation, dict):
+            return None
+        max_tokens = int(getattr(settings, "AUTOMATION_LLM_MAX_TOKENS", 0))
+        return max_tokens if max_tokens > 0 else None
+
+    @classmethod
+    def get_available_tools(
+        cls,
+        role: Optional[AgentRole] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[AgentTool]:
         """获取可用工具列表"""
         tools: List[AgentTool] = []
         allowed_internal_names = set(get_role_tool_names(cls.ROLE_NAME_MAP[role])) if role else None
+        allowed_mcp_server_ids = cls._allowed_mcp_server_ids(metadata)
 
         for spec in list_internal_tool_specs():
             name = spec.name
@@ -292,6 +328,9 @@ class AgentService:
             # ToolRegistry：可通过 ENABLED_AGENT_TOOLS 显式关闭
             if not ToolRegistry.is_enabled(full_name):
                 continue
+            server_id = str(entry.get("server_id") or "").strip()
+            if allowed_mcp_server_ids is not None and server_id not in allowed_mcp_server_ids:
+                continue
             tool_def = entry.get("tool") or {}
             # 对 LLM 暴露的工具名使用 llm_name，避免点号等非法字符
             llm_name = entry.get("llm_name") or full_name
@@ -306,7 +345,14 @@ class AgentService:
         return tools
     
     @classmethod
-    async def execute_tool(cls, tool_name: str, params: Dict[str, Any], db: Session, user: User) -> Dict[str, Any]:
+    async def execute_tool(
+        cls,
+        tool_name: str,
+        params: Dict[str, Any],
+        db: Session,
+        user: User,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """执行工具调用"""
         try:
             # 优先通过 SkillRegistry 调用拆分后的 Skill handler
@@ -316,7 +362,11 @@ class AgentService:
 
             # 若为 MCP Host 自动发现的外部工具，则通过 MCP 协议转发调用
             if McpHostRegistry.get_tool(tool_name):
-                return await cls._execute_mcp_tool(tool_name, params)
+                return await cls._execute_mcp_tool(
+                    tool_name,
+                    params,
+                    allowed_server_ids=cls._allowed_mcp_server_ids(metadata),
+                )
 
             return {"error": f"未知工具: {tool_name}"}
                 
@@ -325,7 +375,12 @@ class AgentService:
             return {"error": f"工具执行错误: {str(e)}"}
 
     @classmethod
-    async def _execute_mcp_tool(cls, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_mcp_tool(
+        cls,
+        tool_name: str,
+        params: Dict[str, Any],
+        allowed_server_ids: Optional[set[str]] = None,
+    ) -> Dict[str, Any]:
         """
         通过 MCP Host 调用外部 MCP 工具（HTTP JSON-RPC）。
 
@@ -336,6 +391,8 @@ class AgentService:
             return {"error": f"未知 MCP 工具: {tool_name}"}
 
         server_id = entry.get("server_id")
+        if allowed_server_ids is not None and server_id not in allowed_server_ids:
+            return {"error": f"未授权的 MCP 服务: {server_id}"}
         server = McpHostRegistry.get_server(server_id)
         if not server:
             return {"error": f"未找到 MCP 服务: {server_id}"}
@@ -473,19 +530,17 @@ class AgentService:
 
             # 2. 可选：在最后一条用户消息中注入联网搜索提示
             if enable_web_search:
-                last_user_message_index = next((i for i in range(len(messages) - 1, -1, -1) if messages[i]["role"] == "user"), -1)
-                if last_user_message_index >= 0:
-                    original_content = messages[last_user_message_index]["content"]
-                    messages[last_user_message_index]["content"] = (
-                        f"{original_content}\n\n请优先考虑使用 search_web 工具在网络上搜索必要信息后再作答。"
-                    )
+                messages.insert(-1 if messages else 0, {
+                    "role": "system",
+                    "content": "如需最新外部信息，优先调用 search_web 工具获取必要事实后再作答。"
+                })
 
             # 2.1 为当前角色选择允许使用的工具集合
-            tools_for_llm = cls.get_available_tools(role=role)
+            tools_for_llm = cls.get_available_tools(role=role, metadata=metadata)
 
             # 3. 迭代式工具调用与回复生成循环
             formatted_results: List[str] = []
-            max_tool_loops = getattr(settings, "AGENT_MAX_TOOL_LOOPS", 4)
+            max_tool_loops = getattr(settings, "AGENT_MAX_TOOL_LOOPS", 20)
             loop_count = 0
             while True:
                 if loop_count >= max_tool_loops:
@@ -507,7 +562,10 @@ class AgentService:
 
                 loop_count += 1
 
-                llm_client = LLMRegistry.get_client(profile=role_cfg.profile)
+                llm_client = LLMRegistry.get_client(
+                    profile=role_cfg.profile,
+                    max_tokens_override=cls._automation_max_tokens(metadata),
+                )
                 llm_response = await llm_client.chat_completion(
                     messages=messages,
                     model=model,
@@ -560,15 +618,18 @@ class AgentService:
                     arguments = cls._apply_tool_runtime_context(function_name, arguments, metadata)
 
                     logger.info(f"执行工具: {function_name}, 参数: {arguments}")
-                    tool_result = await cls.execute_tool(function_name, arguments, db, user)
+                    tool_result = await cls.execute_tool(
+                        function_name,
+                        arguments,
+                        db,
+                        user,
+                        metadata=metadata,
+                    )
 
                     # 供前端展示的格式化输出
                     formatted_result = await cls._format_tool_result_for_display(function_name, tool_result)
                     if formatted_result:
-                        if function_name == "get_stock_price_history":
-                            formatted_results.append(formatted_result[:100])
-                        else:
-                            formatted_results.append(formatted_result)
+                        formatted_results.append(formatted_result)
 
                     # 把工具原始结果以tool消息形式追加，供LLM继续推理
                     messages.append({

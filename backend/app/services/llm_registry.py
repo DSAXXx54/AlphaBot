@@ -72,8 +72,22 @@ class LLMRegistry:
         )
 
     @classmethod
-    def get_client(cls, profile: LLMProfileName = LLMProfileName.DEFAULT) -> LiteLLMService:
+    def get_client(
+        cls,
+        profile: LLMProfileName = LLMProfileName.DEFAULT,
+        *,
+        max_tokens_override: int | None = None,
+    ) -> LiteLLMService:
         """按 profile 获取 LiteLLMService 实例，未传时使用 DEFAULT。"""
+        if max_tokens_override is not None:
+            cfg = cls._build_profile(profile)
+            return LiteLLMService(
+                model=cfg.model,
+                api_base=cfg.api_base,
+                api_key=cfg.api_key,
+                max_tokens=max_tokens_override,
+                temperature=cfg.temperature,
+            )
         if profile not in cls._clients:
             cfg = cls._build_profile(profile)
             cls._clients[profile] = LiteLLMService(

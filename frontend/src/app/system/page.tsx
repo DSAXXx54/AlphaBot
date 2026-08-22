@@ -7,11 +7,12 @@ import InviteCodeManager from '../../components/InviteCodeManager';
 import McpTokenManager from '../../components/McpTokenManager';
 import ExternalMcpOverview from '../../components/ExternalMcpOverview';
 import AccountManager from '../../components/AccountManager';
+import SkillManager from '../../components/SkillManager';
 import { Button } from '../../components/ui/button';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 
-type SystemTab = 'cache' | 'tasks' | 'invites' | 'accounts' | 'mcp' | 'external-mcp';
+type SystemTab = 'cache' | 'tasks' | 'invites' | 'accounts' | 'mcp' | 'external-mcp' | 'skills';
 
 const SystemPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<SystemTab>('cache');
@@ -23,6 +24,7 @@ const SystemPage: React.FC = () => {
     { id: 'accounts', label: '账户管理' },
     { id: 'mcp', label: 'MCP 管理' },
     { id: 'external-mcp', label: '外部 MCP' },
+    { id: 'skills', label: '技能管理' },
   ];
 
   return (
@@ -65,6 +67,7 @@ const SystemPage: React.FC = () => {
         {activeTab === 'accounts' && <AccountManager />}
         {activeTab === 'mcp' && <McpTokenManager />}
         {activeTab === 'external-mcp' && <ExternalMcpOverview />}
+        {activeTab === 'skills' && <SkillManager />}
       </div>
     </div>
   );

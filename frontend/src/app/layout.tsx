@@ -1,21 +1,10 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import IndexedDBInitializer from "../components/IndexedDBInitializer";
 import { AuthProvider } from "@/lib/contexts/AuthContext";
 import { AccountProvider } from "@/lib/contexts/AccountContext";
 import AuthGuard from "@/components/AuthGuard";
 import AntdReact19Compat from "@/components/AntdReact19Compat";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "AlphaBot - 你的智能股票分析助手",
@@ -30,9 +19,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" suppressHydrationWarning>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className="antialiased">
         <AntdReact19Compat />
         <AuthProvider>
           <AccountProvider>

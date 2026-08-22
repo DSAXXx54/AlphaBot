@@ -5,6 +5,10 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
 const publicPaths = ['/', '/login', '/register', '/about'];
+const publicPathPrefixes = ['/published/'];
+
+const isPublicPath = (pathname: string) =>
+  publicPaths.includes(pathname) || publicPathPrefixes.some((prefix) => pathname.startsWith(prefix));
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -19,7 +23,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     }
     
     // 如果不是公开路径且未登录，重定向到登录页
-    if (!isAuthenticated && !publicPaths.includes(pathname)) {
+    if (!isAuthenticated && !isPublicPath(pathname)) {
       router.push('/login');
     } else if (isAuthenticated && ['/login', '/register'].includes(pathname)) {
       router.push('/');
@@ -27,7 +31,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   }, [isAuthenticated, pathname, router]);
 
   // 如果在公共路径上，直接显示内容
-  if (publicPaths.includes(pathname)) {
+  if (isPublicPath(pathname)) {
     return <>{children}</>;
   }
 

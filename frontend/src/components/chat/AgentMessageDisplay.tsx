@@ -1,11 +1,8 @@
 import React from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
-import rehypeRaw from 'rehype-raw';
 import { Bot, User } from 'lucide-react';
 import { Message } from '../../types/chat';
 import { Card } from '../ui/card';
+import { RichMarkdown } from '../markdown/RichMarkdown';
 import { ScrollArea } from '../ui/scroll-area';
 
 interface AgentMessageDisplayProps {
@@ -17,6 +14,7 @@ interface AgentMessageDisplayProps {
 const cn = (...classes: string[]) => classes.filter(Boolean).join(' ');
 
 export function AgentMessageDisplay({ message, isLast }: AgentMessageDisplayProps) {
+  void isLast;
   const isUser = message.role === 'user';
   const isAgent = message.role === 'assistant';
   
@@ -27,22 +25,15 @@ export function AgentMessageDisplay({ message, isLast }: AgentMessageDisplayProp
     }
     
     return (
-      <div className="mt-3 space-y-3">
+      <div className="mt-2 space-y-2">
         {message.toolOutputs.map((output: string, index: number) => (
-          <Card key={index} className="p-3 bg-muted/50 text-sm">
+          <Card key={index} className="rounded-2xl border-border bg-muted/60 p-2.5 text-sm shadow-none">
             <details>
-              <summary className="cursor-pointer select-none text-xs font-medium text-foreground/80 hover:text-foreground transition-colors">
+              <summary className="cursor-pointer select-none text-xs font-medium text-foreground transition-colors hover:text-primary">
                 工具输出 {index + 1}
               </summary>
               <ScrollArea className="mt-2 max-h-64">
-                <div className="prose prose-sm max-w-none dark:prose-invert">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeHighlight, rehypeRaw]}
-                  >
-                    {output}
-                  </ReactMarkdown>
-                </div>
+                <RichMarkdown content={output} className="prose prose-sm max-w-none dark:prose-invert" />
               </ScrollArea>
             </details>
           </Card>
@@ -52,34 +43,31 @@ export function AgentMessageDisplay({ message, isLast }: AgentMessageDisplayProp
   };
 
   return (
-    <div className={cn('flex items-start gap-3 py-4', isUser ? 'justify-end' : 'justify-start')}>
+    <div className={cn('flex items-start gap-2.5 py-2.5', isUser ? 'justify-end' : 'justify-start')}>
       {/* 机器人头像 - 仅在非用户消息时显示 */}
       {!isUser && (
-        <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white shrink-0">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary">
           <Bot className="h-4 w-4" />
         </div>
       )}
 
       {/* 消息内容 */}
-      <div className={cn('max-w-[80%]')}>
+      <div className={cn('max-w-[74%] xl:max-w-[70%]')}>
         <div
           className={cn(
-            'px-4 py-3 rounded-lg shadow-sm',
+            'rounded-[26px] px-4 py-2.5 shadow-sm',
             isUser
-              ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white' 
-              : 'bg-card border border-border'
+              ? 'bg-gradient-to-br from-primary to-blue-500 text-white'
+              : 'border border-border bg-card/95'
           )}
         >
           <div className={cn(
-            'prose prose-sm max-w-none',
-            isUser ? 'dark:prose-invert prose-headings:text-white prose-p:text-white' : 'dark:prose-invert'
+            'prose prose-sm max-w-none leading-6',
+            isUser
+              ? 'dark:prose-invert prose-headings:text-white prose-p:text-white prose-strong:text-white'
+              : 'dark:prose-invert prose-headings:text-foreground prose-p:text-foreground prose-strong:text-foreground dark:prose-headings:text-slate-100 dark:prose-p:text-slate-300 dark:prose-strong:text-slate-100'
           )}>
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeHighlight, rehypeRaw]}
-            >
-              {message.content}
-            </ReactMarkdown>
+            <RichMarkdown content={message.content} />
           </div>
         </div>
         
@@ -89,7 +77,7 @@ export function AgentMessageDisplay({ message, isLast }: AgentMessageDisplayProp
 
       {/* 用户头像 - 仅在用户消息时显示 */}
       {isUser && (
-        <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-gray-700 dark:text-gray-300 shadow-sm shrink-0">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-muted text-foreground shadow-sm">
           <User className="h-4 w-4" />
         </div>
       )}

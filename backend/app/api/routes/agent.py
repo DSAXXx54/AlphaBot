@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import uuid
 import json
 import time
+import re
 
 from app.db.session import get_db
 from app.services.agent_service import AgentService, AgentRole
@@ -16,8 +17,49 @@ from app.api.dependencies import check_web_search_limit, check_usage_limit
 from app.core.config import settings
 from app.channels.base import ChannelMessage
 from app.services.llm_registry import LLMRegistry
+from app.services.custom_skill_service import CustomSkillService
 
 router = APIRouter()
+
+
+BUILTIN_SKILLS = {
+    "research",
+    "portfolio",
+    "risk",
+    "general",
+    "alert",
+}
+
+
+def _parse_explicit_skill_request(raw_text: str) -> tuple[Optional[str], str]:
+    text = (raw_text or "").strip()
+    if not text:
+        return None, ""
+
+    enabled_custom_skills = {item.name for item in CustomSkillService.list_skills()}
+    allowed_skills = BUILTIN_SKILLS | enabled_custom_skills
+
+    if text.startswith("/"):
+        parts = text[1:].split(maxsplit=1)
+        if parts:
+            skill_name = parts[0].strip()
+            if skill_name in allowed_skills:
+                return skill_name, parts[1].strip() if len(parts) > 1 else ""
+
+    if ":" in text:
+        head, body = text.split(":", 1)
+        skill_name = head.strip()
+        if skill_name in allowed_skills:
+            return skill_name, body.strip()
+
+    match = re.match(r"^(?:调用|使用)\s*([a-zA-Z0-9_-]+)\s*(.*)$", text)
+    if match:
+        skill_name = match.group(1).strip()
+        remainder = match.group(2).strip()
+        if skill_name in allowed_skills:
+            return skill_name, remainder or text
+
+    return None, text
 
 class AgentMessageRequest(BaseModel):
     """智能体消息请求"""
@@ -43,11 +85,23 @@ async def agent_chat(
 ):
     """与智能体对话"""
     try:
+        resolved_forced_role = request.forced_role
+        resolved_content = request.content
+        if not resolved_forced_role:
+            parsed_forced_role, parsed_content = _parse_explicit_skill_request(request.content)
+            if parsed_forced_role:
+                resolved_forced_role = parsed_forced_role
+                resolved_content = parsed_content or request.content
+        if not resolved_forced_role:
+            matched_custom_skill = CustomSkillService.match_skill(resolved_content)
+            if matched_custom_skill:
+                resolved_forced_role = matched_custom_skill
+
         # 如果没有提供会话ID，生成一个新的
         session_id = request.session_id or str(uuid.uuid4())
         metadata: Dict[str, Any] = {}
-        if request.forced_role:
-            metadata["forced_role"] = request.forced_role
+        if resolved_forced_role:
+            metadata["forced_role"] = resolved_forced_role
         if request.account_context:
             metadata["account_context"] = request.account_context
         
@@ -62,7 +116,7 @@ async def agent_chat(
         if request.stream:
             return StreamingResponse(
                 stream_agent_response(
-                    user_message=request.content,
+                    user_message=resolved_content,
                     session_id=session_id,
                     db=db,
                     user=current_user,
@@ -78,7 +132,7 @@ async def agent_chat(
             channel="web_chat",
             session_id=session_id,
             user_id=current_user.id,
-            content=request.content,
+            content=resolved_content,
             metadata=metadata,
         )
 
@@ -90,7 +144,10 @@ async def agent_chat(
             model=request.model,
         )
 
-        return api_response(data=reply.model_dump())
+        payload = reply.model_dump()
+        if resolved_forced_role and CustomSkillService.skill_exists(resolved_forced_role):
+            payload["active_skill"] = resolved_forced_role
+        return api_response(data=payload)
     except HTTPException as he:
         return api_response(
             success=False,
@@ -120,6 +177,31 @@ async def get_available_models(
             success=False,
             error=str(e)
         )
+
+@router.get("/skills", response_model=Dict[str, Any])
+async def get_available_skills(
+    _current_user: User = Depends(get_current_user)
+):
+    try:
+        builtin = [
+            {"value": "research", "label": "Research", "description": "适合每日市场研究、热点梳理和资讯摘要。", "kind": "builtin"},
+            {"value": "portfolio", "label": "Portfolio", "description": "适合围绕持仓、组合和账户上下文生成输出。", "kind": "builtin"},
+            {"value": "risk", "label": "Risk", "description": "适合风控巡检、回撤监控和风险提示。", "kind": "builtin"},
+            {"value": "general", "label": "General", "description": "适合综合性任务，由通用助手执行。", "kind": "builtin"},
+            {"value": "alert", "label": "Alert", "description": "适合预警策略、提醒规则和触发结果整理。", "kind": "builtin"},
+        ]
+        custom = [
+            {
+                "value": item.name,
+                "label": item.label,
+                "description": item.description,
+                "kind": "custom",
+            }
+            for item in CustomSkillService.list_skills()
+        ]
+        return api_response(data=builtin + custom)
+    except Exception as e:
+        return api_response(success=False, error=str(e))
 
 async def stream_agent_response(
     user_message: str,
@@ -152,6 +234,13 @@ async def stream_agent_response(
         )
         role_cfg = AgentService.ROLE_CONFIGS.get(role) or AgentService.ROLE_CONFIGS[AgentRole.GENERAL]
 
+        if forced_role and CustomSkillService.skill_exists(forced_role):
+            yield json.dumps({
+                "type": "skill_loaded",
+                "skill_name": forced_role,
+                "timestamp": int(time.time() * 1000)
+            }) + "\n"
+
         # 构建消息历史（传入 user_id 以注入未读预警）
         messages = AgentService._build_messages(
             user_message,
@@ -164,12 +253,10 @@ async def stream_agent_response(
         
         # 可选：在最后一条用户消息中注入联网搜索提示
         if enable_web_search:
-            last_user_message_index = next((i for i in range(len(messages) - 1, -1, -1) if messages[i]["role"] == "user"), -1)
-            if last_user_message_index >= 0:
-                original_content = messages[last_user_message_index]["content"]
-                messages[last_user_message_index]["content"] = (
-                    f"{original_content}\n\n请优先考虑使用 search_web 工具在网络上搜索必要信息后再作答。"
-                )
+            messages.insert(-1 if messages else 0, {
+                "role": "system",
+                "content": "如需最新外部信息，优先调用 search_web 工具获取必要事实后再作答。"
+            })
         
         # 发送思考状态
         yield json.dumps({

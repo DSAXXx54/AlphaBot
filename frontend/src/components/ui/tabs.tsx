@@ -45,7 +45,7 @@ export function Tabs({ defaultValue, children, className = '' }: TabsProps) {
 
 export function TabsList({ children, className = '' }: TabsListProps) {
   return (
-    <div className={`flex space-x-1 rounded-md bg-muted p-1 ${className}`}>
+    <div className={`flex space-x-1 rounded-2xl bg-muted p-1 ${className}`}>
       {children}
     </div>
   );
@@ -57,7 +57,7 @@ export function TabsTrigger({ value, children, className = '' }: TabsTriggerProp
   
   return (
     <button
-      className={`px-3 py-1.5 text-sm font-medium transition-all rounded-sm ${
+      className={`rounded-xl px-3 py-2 text-sm font-medium transition-all ${
         isSelected 
           ? 'bg-background text-foreground shadow-sm' 
           : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'

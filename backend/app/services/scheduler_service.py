@@ -24,7 +24,9 @@ class Task:
         interval: int = 3600,  # 默认1小时
         next_run: float = None,
         description: str = "",
-        is_enabled: bool = True
+        is_enabled: bool = True,
+        task_type: str = "generic",
+        params: Optional[Dict[str, Any]] = None,
     ):
         self.task_id = task_id
         self.func = func
@@ -34,33 +36,45 @@ class Task:
         self.next_run = next_run or time.time()
         self.description = description
         self.is_enabled = is_enabled
+        self.task_type = task_type
+        self.params = params or {}
         self.last_run = None
         self.last_result = None
         self.last_error = None
         self.run_count = 0
+        self.status = "pending"
 
     def to_dict(self) -> Dict[str, Any]:
         """将任务转换为可序列化的字典"""
         return {
             "task_id": self.task_id,
+            "task_type": self.task_type,
             "interval": self.interval,
             "next_run": datetime.fromtimestamp(self.next_run).isoformat() if self.next_run else None,
             "description": self.description,
             "is_enabled": self.is_enabled,
             "last_run": datetime.fromtimestamp(self.last_run).isoformat() if self.last_run else None,
-            "last_result": str(self.last_result) if self.last_result is not None else None,
-            "last_error": self.last_error,
             "run_count": self.run_count,
-            # 不包含 func, args, kwargs 因为它们不可序列化
+            "status": self.status,
+            "result": self.last_result if isinstance(self.last_result, dict) else {"value": self.last_result} if self.last_result is not None else None,
+            "error": self.last_error,
+            "params": self.params,
         }
 
     def to_persisted_dict(self) -> Dict[str, Any]:
         return {
             "task_id": self.task_id,
+            "task_type": self.task_type,
             "interval": self.interval,
             "next_run": self.next_run,
             "description": self.description,
             "is_enabled": self.is_enabled,
+            "params": self.params,
+            "last_run": self.last_run,
+            "run_count": self.run_count,
+            "status": self.status,
+            "last_result": self.last_result,
+            "last_error": self.last_error,
         }
 
 class SchedulerService:
@@ -124,7 +138,9 @@ class SchedulerService:
         next_run: float = None,
         description: str = "",
         task_id: str = None,
-        is_enabled: bool = True
+        is_enabled: bool = True,
+        task_type: str = "generic",
+        params: Optional[Dict[str, Any]] = None,
     ) -> str:
         """添加定时任务"""
         # 生成任务ID
@@ -139,15 +155,28 @@ class SchedulerService:
             interval=interval,
             next_run=next_run,
             description=description,
-            is_enabled=is_enabled
+            is_enabled=is_enabled,
+            task_type=task_type,
+            params=params,
         )
 
         persisted = self._persisted_task_states.get(task_id)
         if persisted:
+            task.task_type = str(persisted.get("task_type", task.task_type))
             task.interval = int(persisted.get("interval", task.interval))
             task.next_run = float(persisted.get("next_run", task.next_run))
             task.description = str(persisted.get("description", task.description))
             task.is_enabled = bool(persisted.get("is_enabled", task.is_enabled))
+            persisted_params = persisted.get("params")
+            if isinstance(persisted_params, dict):
+                task.params = persisted_params
+                if isinstance(task.kwargs.get("params"), dict):
+                    task.kwargs["params"] = persisted_params
+            task.last_run = persisted.get("last_run")
+            task.run_count = int(persisted.get("run_count", task.run_count) or 0)
+            task.status = str(persisted.get("status", task.status) or task.status)
+            task.last_result = persisted.get("last_result")
+            task.last_error = persisted.get("last_error")
 
         # 添加到任务列表
         async with self._task_lock:
@@ -203,7 +232,10 @@ class SchedulerService:
         self,
         task_id: str,
         interval: Optional[int] = None,
+        next_run: Optional[float] = None,
         is_enabled: Optional[bool] = None,
+        description: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """更新任务的调度配置。"""
         async with self._task_lock:
@@ -213,10 +245,20 @@ class SchedulerService:
 
             if interval is not None:
                 task.interval = interval
-                task.next_run = time.time() + interval
+                task.next_run = next_run if next_run is not None else time.time() + interval
+            elif next_run is not None:
+                task.next_run = next_run
 
             if is_enabled is not None:
                 task.is_enabled = is_enabled
+
+            if description is not None:
+                task.description = description
+
+            if params is not None:
+                task.params = params
+                if isinstance(task.kwargs.get("params"), dict):
+                    task.kwargs["params"] = params
 
             self._persist_task_state(task)
 
@@ -244,15 +286,19 @@ class SchedulerService:
         task = self._tasks[task_id]
         
         try:
+            task.status = "running"
             logger.info(f"手动运行任务: {task_id} - {task.description}")
             task.last_result = await task.func(*task.args, **task.kwargs)
             task.last_run = time.time()
             task.run_count += 1
             task.last_error = None
+            task.status = "success"
             self._persist_task_state(task)
             return True
         except Exception as e:
             task.last_error = str(e)
+            task.status = "failed"
+            self._persist_task_state(task)
             logger.error(f"任务执行出错: {task_id} - {str(e)}")
             return False
     
@@ -321,16 +367,20 @@ class SchedulerService:
         """执行任务"""
         task.last_run = time.time()
         task.run_count += 1
+        task.status = "running"
         
         try:
             # 执行任务函数
             result = await task.func(*task.args, **task.kwargs)
             task.last_result = result
+            task.last_error = None
+            task.status = "success"
             self._persist_task_state(task)
             logger.info(f"任务执行成功: {task.task_id} - {task.description}")
             return result
         except Exception as e:
             task.last_error = str(e)
+            task.status = "failed"
             self._persist_task_state(task)
             logger.error(f"任务执行失败: {task.task_id} - {task.description} - {str(e)}")
             return None 

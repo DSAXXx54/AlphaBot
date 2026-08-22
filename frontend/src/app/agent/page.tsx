@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React from 'react';
 import AgentChat from '@/components/AgentChat';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
@@ -17,7 +17,7 @@ export default function AgentPage() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-white dark:bg-gray-900">
+    <div className="flex h-[100dvh] min-h-0 flex-col bg-background text-foreground">
       {!isAuthenticated ? (
         <div className="flex flex-col items-center justify-center h-[85vh] px-4">
           <div className="flex flex-col items-center max-w-md text-center">
@@ -45,7 +45,7 @@ export default function AgentPage() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 relative h-full">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <AgentChat onSelectStock={handleSelectStock} />
         </div>
       )}

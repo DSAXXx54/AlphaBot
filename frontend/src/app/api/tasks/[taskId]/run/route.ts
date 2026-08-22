@@ -7,21 +7,27 @@ import { TaskInfo } from '../../../../../types';
 const mockTasks: TaskInfo[] = [
   {
     task_id: '1',
+    task_type: 'update_stock_data',
     description: '更新股票数据: AAPL',
     interval: 3600,
     next_run: new Date(Date.now() + 3600 * 1000).toISOString(),
     last_run: new Date(Date.now() - 1800 * 1000).toISOString(),
     run_count: 5,
     is_enabled: true,
+    status: 'success',
+    params: {},
   },
   {
     task_id: '2',
+    task_type: 'update_stock_data',
     description: '更新股票数据: 所有',
     interval: 86400,
     next_run: new Date(Date.now() + 43200 * 1000).toISOString(),
     last_run: new Date(Date.now() - 43200 * 1000).toISOString(),
     run_count: 2,
     is_enabled: true,
+    status: 'success',
+    params: {},
   },
 ];
 
@@ -55,6 +61,7 @@ export async function POST(
     last_run: now.toISOString(),
     next_run: new Date(now.getTime() + mockTasks[taskIndex].interval * 1000).toISOString(),
     run_count: mockTasks[taskIndex].run_count + 1,
+    status: 'success',
   };
   
   return NextResponse.json({

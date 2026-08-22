@@ -97,6 +97,15 @@ export interface ExternalMcpServerInfo {
   tools: ExternalMcpToolInfo[];
 }
 
+export interface AgentSkillInfo {
+  name: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+  kind?: 'builtin' | 'custom';
+  manageable?: boolean;
+}
+
 export interface AccountConnection {
   id: number;
   provider: 'ths' | 'qmt';

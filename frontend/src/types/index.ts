@@ -124,12 +124,17 @@ export interface CacheStats {
 // 任务基本信息
 export interface TaskInfo {
   task_id: string;
+  task_type: string;
   description: string;
   interval: number;
   next_run: string;
   last_run?: string;
   run_count: number;
   is_enabled: boolean;
+  status?: string;
+  error?: string | null;
+  result?: Record<string, unknown> | null;
+  params?: Record<string, unknown>;
 }
 
 // 创建任务请求
@@ -138,12 +143,16 @@ export interface TaskCreate {
   symbol?: string;
   interval: number;
   is_enabled: boolean;
+  description?: string;
+  params?: Record<string, unknown>;
 }
 
 // 更新任务请求
 export interface TaskUpdate {
   interval?: number;
   is_enabled?: boolean;
+  description?: string;
+  params?: Record<string, unknown>;
 }
 
 export interface WorldCupMarketPrice {

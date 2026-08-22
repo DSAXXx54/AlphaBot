@@ -1,20 +1,20 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Card } from './ui/card';
-import { Button } from './ui/button';
-import { Input } from './ui/input';
-import { Loader2, Send, Bot, User, TrendingUp, BarChart2, PieChart, LineChart, Plus, Trash2, MessageSquare, Copy, Search, Globe } from 'lucide-react';
+import { Loader2, Bot, TrendingUp, BarChart2, PieChart, LineChart, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useAccounts } from '@/lib/contexts/AccountContext';
-import { chatWithAgent, chatWithAgentStream, getAgentSessions, getAgentSessionHistory, deleteAgentSession, searchWeb, executeAgentTool } from '@/lib/api';
-import { getAvailableModels } from '@/lib/api';
+import { chatWithAgent, chatWithAgentStream, getAgentSessions, getAgentSessionHistory, deleteAgentSession, executeAgentTool, getAvailableModels, getAgentSkills, createTask, updateTask, runTaskNow, listExternalMcpServers, getAllTasks, deleteTask } from '@/lib/api';
 import ReactMarkdown from 'react-markdown';
-import { ScrollArea } from './ui/scroll-area';
-import { format } from 'date-fns';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus, vs } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { AgentMessageDisplay } from './chat/AgentMessageDisplay';
+import { AgentRunSidebar } from './agent/AgentRunSidebar';
+import { AgentWorkspaceHeader } from './agent/AgentWorkspaceHeader';
+import { AgentInspector, AgentSkillOption, AutomationConfig } from './agent/AgentInspector';
+import { AgentComposer } from './agent/AgentComposer';
+import { Button } from './ui/button';
+import { AgentArtifact, AgentRunEvent, AgentToolInvocation } from '@/types/agent';
+import { TaskInfo } from '@/types';
+import { ExternalMcpServerInfo } from '@/types/user';
 
 const generateId = (): string => {
   try {
@@ -45,138 +45,43 @@ interface Session {
   message_count: number;
 }
 
-// 声明搜索结果类型
-interface SearchResult {
-  title: string;
-  link: string;
-  snippet: string;
-  source: string;
-}
+const createTimestamp = () => new Date().toISOString();
 
-interface SearchResultsProps {
-  results: SearchResult[];
-  query: string;
-}
-
-// 搜索结果组件
-const SearchResults = ({ results, query }: SearchResultsProps) => {
-  if (!results || results.length === 0) return null;
-  
-  return (
-    <div className="mt-2 p-4 bg-blue-50 dark:bg-blue-900 rounded-md">
-      <h3 className="text-md font-medium mb-2">搜索结果: {query}</h3>
-      <div className="space-y-2">
-        {results.map((result, index) => (
-          <div key={index} className="p-2 bg-white dark:bg-gray-800 rounded shadow-sm">
-            <h4 className="font-medium text-blue-600 dark:text-blue-400">
-              <a href={result.link} target="_blank" rel="noopener noreferrer" className="hover:underline">
-                {result.title}
-              </a>
-            </h4>
-            <p className="text-sm text-gray-600 dark:text-gray-300">{result.snippet}</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              来源: {result.source}
-            </p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+const extractSymbols = (text: string): string[] => {
+  const matches = text.match(/\$?[A-Z]{2,5}(?:\.[A-Z]+)?/g) || [];
+  return Array.from(new Set(matches.map((item) => item.replace(/^\$/, '')))).slice(0, 5);
 };
 
-interface AgentMessageProps {
-  message: {
-    content: string;
-  };
-  isUser: boolean;
-}
+const slugify = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'daily-report';
 
-// 智能体消息组件 - 修改消息组件以支持搜索结果
-const AgentMessage = ({ message, isUser }: AgentMessageProps) => {
-  const messageText = message.content || '';
-  
-  // 检查消息是否包含搜索结果
-  const hasSearchResults = !isUser && messageText.includes('"results":');
-  let searchResults: { results: SearchResult[], query: string } | null = null;
-  let cleanedMessage = messageText;
-  
-  if (hasSearchResults) {
-    try {
-      // 尝试提取JSON数据
-      const jsonMatch = messageText.match(/```json\n([\s\S]*?)\n```/);
-      if (jsonMatch && jsonMatch[1]) {
-        const searchData = JSON.parse(jsonMatch[1]);
-        if (searchData.results && searchData.query) {
-          searchResults = searchData;
-          // 移除JSON块
-          cleanedMessage = messageText.replace(/```json\n[\s\S]*?\n```/, '');
-        }
-      }
-    } catch (e) {
-      console.error("解析搜索结果失败:", e);
-    }
-  }
-  
-  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  
-  return (
-    <div className={`flex mb-4 ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`rounded-lg px-4 py-2 max-w-[80%] ${
-        isUser ? 'bg-blue-500 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-200'
-      }`}>
-        <ReactMarkdown 
-          components={{
-            code: ({ className, children, ...props }: any) => {
-              const match = /language-(\w+)/.exec(className || '');
-              const language = match ? match[1] : '';
-              
-              if (language) {
-                return (
-                  <div className="rounded-md overflow-hidden my-2 bg-gray-50 dark:bg-gray-800">
-                    <div className="flex items-center justify-between px-4 py-1.5 bg-gray-100 dark:bg-gray-700">
-                      <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{language}</span>
-                    </div>
-                    <SyntaxHighlighter
-                      language={language}
-                      style={isDark ? vscDarkPlus : vs}
-                      customStyle={{ margin: 0, padding: '1rem' }}
-                    >
-                      {String(children).replace(/\n$/, '')}
-                    </SyntaxHighlighter>
-                  </div>
-                );
-              }
-              
-              return (
-                <code className={className} {...props}>
-                  {children}
-                </code>
-              );
-            }
-          }}
-        >
-          {cleanedMessage}
-        </ReactMarkdown>
-        
-        {searchResults && (
-          <SearchResults 
-            results={searchResults.results} 
-            query={searchResults.query} 
-          />
-        )}
-      </div>
-    </div>
-  );
+const normalizeSlugTemplate = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9{}_-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'review-{date_compact}';
+
+const toBrief = (value: string, maxLength = 44): string => {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength).trimEnd()}...` : normalized;
 };
 
 export default function AgentChat({ onSelectStock }: AgentChatProps) {
+  void onSelectStock;
   const { isAuthenticated, user } = useAuth();
   const { selectedAccount } = useAccounts();
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [currentSession, setCurrentSession] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<'conversation' | 'automation'>('conversation');
   const [isLoading, setIsLoading] = useState(false);
-  const [isThinking, setIsThinking] = useState(false);
+  const [, setIsThinking] = useState(false);
   const [sessionList, setSessionList] = useState<Session[]>([]);
   const [showSidebar, setShowSidebar] = useState<boolean>(false);
   const [isFetchingSessions, setIsFetchingSessions] = useState<boolean>(false);
@@ -187,6 +92,148 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
   const [currentStreamingMessage, setCurrentStreamingMessage] = useState<Message | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<{value: string, label: string}[]>([{ value: '', label: '默认模型' }]);
+  const [isRefreshingSkills, setIsRefreshingSkills] = useState(false);
+  const [activeSkillName, setActiveSkillName] = useState<string | null>(null);
+  const [skillOptions, setSkillOptions] = useState<AgentSkillOption[]>([
+    { value: 'research', label: 'Research', description: '适合每日市场研究、热点梳理和资讯摘要。', kind: 'builtin' },
+    { value: 'portfolio', label: 'Portfolio', description: '适合围绕持仓、组合和账户上下文生成输出。', kind: 'builtin' },
+    { value: 'risk', label: 'Risk', description: '适合风控巡检、回撤监控和风险提示。', kind: 'builtin' },
+    { value: 'general', label: 'General', description: '适合综合性任务，由通用助手执行。', kind: 'builtin' },
+    { value: 'alert', label: 'Alert', description: '适合预警策略、提醒规则和触发结果整理。', kind: 'builtin' },
+  ]);
+  const [runEvents, setRunEvents] = useState<AgentRunEvent[]>([]);
+  const [toolInvocations, setToolInvocations] = useState<AgentToolInvocation[]>([]);
+  const [artifacts, setArtifacts] = useState<AgentArtifact[]>([]);
+  const [externalMcpServers, setExternalMcpServers] = useState<ExternalMcpServerInfo[]>([]);
+  const [automationTaskId, setAutomationTaskId] = useState<string | null>(null);
+  const [automationPublishUrl, setAutomationPublishUrl] = useState<string | null>(null);
+  const [automationFeedback, setAutomationFeedback] = useState<string | null>(null);
+  const [automationTaskInfo, setAutomationTaskInfo] = useState<TaskInfo | null>(null);
+  const [isDeletingAutomation, setIsDeletingAutomation] = useState(false);
+  const [isSavingAutomation, setIsSavingAutomation] = useState(false);
+  const [isRunningAutomation, setIsRunningAutomation] = useState(false);
+  const [streamAbortController, setStreamAbortController] = useState<AbortController | null>(null);
+  const [automationConfig, setAutomationConfig] = useState<AutomationConfig>({
+    taskName: '每日市场复盘',
+    dailyTime: '09:00',
+    timezone: 'Asia/Shanghai',
+    skillName: 'research',
+    promptTemplate: '请基于 {date} 的市场环境，生成一份结构化的 A 股每日市场复盘，包含指数表现、热点板块、风险提醒、值得关注的标的与后续观察点。',
+    enableWebSearch: false,
+    publishTitle: '{date} · {brief}',
+    publishCollectionSlug: 'daily-market-brief',
+    publishSlug: 'review-{date_compact}',
+    selectedMcpServerIds: [],
+  });
+
+  const appendRunEvent = useCallback((event: Omit<AgentRunEvent, 'id' | 'createdAt'>) => {
+    setRunEvents((prev) => [
+      ...prev,
+      {
+        id: generateId(),
+        createdAt: createTimestamp(),
+        ...event,
+      },
+    ]);
+  }, []);
+
+  const updateLatestRunEvent = useCallback(
+    (
+      matcher: (event: AgentRunEvent) => boolean,
+      updates: Partial<Omit<AgentRunEvent, 'id' | 'createdAt'>>,
+    ) => {
+      setRunEvents((prev) => {
+        const next = [...prev];
+        const index = [...next].reverse().findIndex(matcher);
+        if (index === -1) return prev;
+        const actualIndex = next.length - 1 - index;
+        next[actualIndex] = {
+          ...next[actualIndex],
+          ...updates,
+        };
+        return next;
+      });
+    },
+    [],
+  );
+
+  const settleRunningEvents = useCallback((status: 'done' | 'error') => {
+    setRunEvents((prev) =>
+      prev.map((event) =>
+        event.status === 'running'
+          ? {
+              ...event,
+              status,
+            }
+          : event
+      )
+    );
+  }, []);
+
+  const registerArtifact = useCallback((artifact: Omit<AgentArtifact, 'id' | 'createdAt'>) => {
+    setArtifacts((prev) => {
+      const exists = prev.some((item) => item.kind === artifact.kind && item.title === artifact.title && item.content === artifact.content);
+      if (exists) return prev;
+      return [
+        ...prev,
+        {
+          id: generateId(),
+          createdAt: createTimestamp(),
+          ...artifact,
+        },
+      ];
+    });
+  }, []);
+
+  const ingestArtifactsFromText = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    registerArtifact({
+      kind: 'summary',
+      title: '最新分析摘要',
+      content: trimmed.slice(0, 500),
+    });
+
+    extractSymbols(trimmed).forEach((symbol) => {
+      registerArtifact({
+        kind: 'symbol',
+        title: `提及标的 ${symbol}`,
+        content: symbol,
+      });
+    });
+  }, [registerArtifact]);
+
+  const startToolInvocation = useCallback((toolName: string, argsText?: string) => {
+    const invocationId = generateId();
+    setToolInvocations((prev) => [
+      ...prev,
+      {
+        id: invocationId,
+        toolName,
+        status: 'running',
+        argsText,
+        createdAt: createTimestamp(),
+        updatedAt: createTimestamp(),
+      },
+    ]);
+    return invocationId;
+  }, []);
+
+  const finishLatestToolInvocation = useCallback((toolName: string, updates: Partial<AgentToolInvocation>) => {
+    setToolInvocations((prev) => {
+      const next = [...prev];
+      const index = [...next].reverse().findIndex((item) => item.toolName === toolName && item.status === 'running');
+      if (index === -1) return prev;
+      const actualIndex = next.length - 1 - index;
+      next[actualIndex] = {
+        ...next[actualIndex],
+        ...updates,
+        updatedAt: createTimestamp(),
+      };
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -199,9 +246,92 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
       }
     })();
   }, []);
+
+  const loadSkillOptions = useCallback(async () => {
+    setIsRefreshingSkills(true);
+    try {
+      const res = await getAgentSkills();
+      const options = res.data;
+      if (res.success && options?.length) {
+        setSkillOptions(options);
+        setAutomationConfig((prev) => {
+          const exists = options.some((item) => item.value === prev.skillName);
+          return exists ? prev : { ...prev, skillName: options[0].value };
+        });
+      }
+    } finally {
+      setIsRefreshingSkills(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSkillOptions();
+  }, [loadSkillOptions]);
+
+  useEffect(() => {
+    (async () => {
+      const res = await listExternalMcpServers();
+      if (res.success && res.data) {
+        setExternalMcpServers(res.data.filter((server) => server.enabled));
+      }
+    })();
+  }, []);
+
+  const hydrateAutomationTask = useCallback((task: TaskInfo) => {
+    const params = (task.params || {}) as Record<string, unknown>;
+    setAutomationTaskInfo(task);
+    setAutomationTaskId(task.task_id);
+    setAutomationConfig((prev) => ({
+      ...prev,
+      taskName: typeof task.description === 'string' && task.description.trim() ? task.description : prev.taskName,
+      dailyTime: typeof params.daily_time === 'string' && params.daily_time ? params.daily_time : prev.dailyTime,
+      timezone: typeof params.timezone === 'string' && params.timezone ? params.timezone : prev.timezone,
+      skillName: typeof params.skill_name === 'string' && params.skill_name ? params.skill_name : prev.skillName,
+      promptTemplate: typeof params.prompt_template === 'string' && params.prompt_template ? params.prompt_template : prev.promptTemplate,
+      enableWebSearch: Boolean(params.enable_web_search),
+      publishTitle: typeof params.publish_title === 'string' && params.publish_title ? params.publish_title : prev.publishTitle,
+      publishCollectionSlug: typeof params.publish_collection_slug === 'string' && params.publish_collection_slug ? params.publish_collection_slug : prev.publishCollectionSlug,
+      publishSlug: typeof params.publish_slug === 'string' && params.publish_slug ? params.publish_slug : prev.publishSlug,
+      selectedMcpServerIds: Array.isArray(params.mcp_servers)
+        ? params.mcp_servers.map((item) => String(item)).filter(Boolean)
+        : prev.selectedMcpServerIds,
+    }));
+
+    const publishedUrl =
+      task.result && typeof task.result.published_url === 'string'
+        ? task.result.published_url
+        : null;
+    setAutomationPublishUrl(publishedUrl);
+  }, []);
+
+  const loadAutomationTask = useCallback(async () => {
+    if (!isAuthenticated) return;
+    const response = await getAllTasks();
+    if (!response.success || !response.data) return;
+
+    const task = [...response.data]
+      .filter((item) => item.task_type === 'skill_publish_job')
+      .sort((a, b) => {
+        const aTime = new Date(a.last_run || a.next_run || 0).getTime();
+        const bTime = new Date(b.last_run || b.next_run || 0).getTime();
+        return bTime - aTime;
+      })[0];
+
+    if (task) {
+      hydrateAutomationTask(task);
+    } else {
+      setAutomationTaskId(null);
+      setAutomationTaskInfo(null);
+      setAutomationPublishUrl(null);
+    }
+  }, [hydrateAutomationTask, isAuthenticated]);
+
+  useEffect(() => {
+    void loadAutomationTask();
+  }, [loadAutomationTask]);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   
   // 初始消息
   useEffect(() => {
@@ -214,6 +344,19 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
           timestamp: new Date()
         }
       ]);
+      setRunEvents([
+        {
+          id: generateId(),
+          type: 'status',
+          title: '工作台已就绪',
+          detail: '等待你创建新的分析任务。',
+          status: 'done',
+          createdAt: createTimestamp(),
+        },
+      ]);
+      setToolInvocations([]);
+      setArtifacts([]);
+      setActiveSkillName(null);
     }
     
     // 聚焦输入框
@@ -258,7 +401,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
     try {
       const response = await getAgentSessionHistory(sessionId);
       if (response.success && response.data && response.data.messages) {
-        const formattedMessages = response.data.messages.map((msg: any) => ({
+        const formattedMessages: Message[] = response.data.messages.map((msg: { id: string; role: 'user' | 'assistant' | 'system'; content: string; timestamp: string }) => ({
           id: msg.id,
           role: msg.role,
           content: msg.content,
@@ -266,6 +409,25 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
         }));
         setMessages(formattedMessages);
         setCurrentSession(sessionId);
+        setActiveSkillName(null);
+        setRunEvents(
+          formattedMessages.map((msg) => ({
+            id: generateId(),
+            type: msg.role === 'user' ? 'goal' : 'answer',
+            title: msg.role === 'user' ? '已恢复用户目标' : '已恢复助手输出',
+            detail: msg.content.slice(0, 280),
+            status: 'done' as const,
+            createdAt: msg.timestamp.toISOString(),
+          }))
+        );
+        setToolInvocations([]);
+        setArtifacts([]);
+        formattedMessages.forEach((msg) => {
+          if (msg.role === 'assistant') {
+            ingestArtifactsFromText(msg.content);
+          }
+        });
+        setActiveView('conversation');
       }
     } catch (error) {
       console.error('获取会话历史失败:', error);
@@ -299,7 +461,12 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
   
   // 处理发送消息
   const handleSendMessage = async () => {
-    if (!input.trim()) return;
+    await submitMessage(input);
+  };
+
+  const submitMessage = async (rawInput: string) => {
+    const trimmedInput = rawInput.trim();
+    if (!trimmedInput) return;
     
     if (!isAuthenticated) {
       alert('请先登录后再使用智能助手功能');
@@ -307,7 +474,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
     }
     
     // 如果是使用/search命令，检查积分
-    if (input.trim().startsWith('/search') && !canUseWebSearch) {
+    if (trimmedInput.startsWith('/search') && !canUseWebSearch) {
       // 积分不足，直接显示错误信息，不展示思考状态
       const insufficientPointsMessage: Message = {
         id: generateId(),
@@ -322,7 +489,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
         {
           id: generateId(),
           role: 'user',
-          content: input,
+          content: trimmedInput,
           timestamp: new Date()
         },
         insufficientPointsMessage
@@ -348,7 +515,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
         {
           id: generateId(),
           role: 'user',
-          content: input,
+          content: trimmedInput,
           timestamp: new Date()
         },
         insufficientPointsMessage
@@ -362,18 +529,24 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
     const userMessage: Message = {
       id: generateId(),
       role: 'user',
-      content: input,
+      content: trimmedInput,
       timestamp: new Date()
     };
     
     setMessages(prev => [...prev, userMessage]);
+    appendRunEvent({
+      type: 'goal',
+      title: '收到新的任务目标',
+      detail: trimmedInput,
+      status: 'done',
+    });
     setInput('');
     setIsLoading(true);
     
     try {
       if (streamEnabled) {
         // 使用流式传输 - 不添加思考消息，流式处理会自己管理状态
-        await handleStreamingChat(input);
+        await handleStreamingChat(trimmedInput);
       } else {
         // 使用传统方式 - 添加思考消息
         setIsThinking(true);
@@ -387,13 +560,20 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
           };
           setMessages(prev => [...prev, thinkingMessage]);
         }, 300);
+        appendRunEvent({
+          type: 'thinking',
+          title: '进入分析阶段',
+          detail: 'Agent 正在整理上下文并准备回答。',
+          status: 'running',
+        });
         
-        await handleTraditionalChat(input);
+        await handleTraditionalChat(trimmedInput);
       }
     } catch (error) {
       // 移除思考消息
       setIsThinking(false);
       setMessages(prev => prev.filter(msg => !msg.id.startsWith('thinking-')));
+      settleRunningEvents('error');
       
       console.error('发送消息错误:', error);
       const errorMessage: Message = {
@@ -403,6 +583,12 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
         timestamp: new Date()
       };
       setMessages(prev => [...prev, errorMessage]);
+      appendRunEvent({
+        type: 'error',
+        title: '任务执行失败',
+        detail: '与服务器通信时出错，处理被中断。',
+        status: 'error',
+      });
     } finally {
       setIsLoading(false);
       // 聚焦输入框以便继续对话
@@ -427,6 +613,8 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
     
     setCurrentStreamingMessage(streamingMessage);
     setMessages(prev => [...prev, streamingMessage]);
+    const abortController = new AbortController();
+    setStreamAbortController(abortController);
     
     let sessionId = currentSession;
     const toolOutputs: string[] = [];
@@ -448,6 +636,12 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
           case 'start':
             sessionId = message.session_id;
             setCurrentSession(sessionId);
+            appendRunEvent({
+              type: 'status',
+              title: '任务已创建',
+              detail: `运行标识 ${message.session_id}`,
+              status: 'done',
+            });
             break;
           
           case 'delta':
@@ -462,30 +656,99 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
           case 'thinking':
             // 更新思考状态
             setStreamingMessage(message.content);
+            updateLatestRunEvent(
+              (event) => event.type === 'thinking' && event.status === 'running',
+              {
+                detail: message.content,
+              }
+            );
+            appendRunEvent({
+              type: 'thinking',
+              title: 'Agent 正在思考',
+              detail: message.content,
+              status: 'running',
+            });
+            break;
+
+          case 'skill_loaded':
+            setStreamingMessage(`已加载 Skill：${message.skill_name}`);
+            setActiveSkillName(String(message.skill_name || ''));
+            appendRunEvent({
+              type: 'status',
+              title: '已加载 Skill',
+              detail: String(message.skill_name || ''),
+              status: 'done',
+            });
             break;
             
           case 'tool_calls':
             // 工具调用开始
             setStreamingMessage('正在执行工具调用...');
+            updateLatestRunEvent(
+              (event) => event.type === 'thinking' && event.status === 'running',
+              {
+                status: 'done',
+              }
+            );
+            appendRunEvent({
+              type: 'tool_call',
+              title: '准备调用工具',
+              detail: '模型决定通过工具补充外部信息。',
+              status: 'running',
+            });
             break;
             
           case 'tool_start':
             // 工具执行开始
             setStreamingMessage(`正在执行 ${message.tool_name}...`);
+            startToolInvocation(message.tool_name);
+            appendRunEvent({
+              type: 'tool_call',
+              title: `调用工具 ${message.tool_name}`,
+              detail: '工具执行中',
+              status: 'running',
+            });
             break;
             
           case 'tool_result':
             // 工具执行结果
             if (message.formatted_result) {
               toolOutputs.push(message.formatted_result);
+              registerArtifact({
+                kind: 'tool_output',
+                title: `工具结果 · ${message.tool_name}`,
+                content: message.formatted_result.slice(0, 500),
+              });
             }
             setStreamingMessage('正在处理工具结果...');
+            finishLatestToolInvocation(message.tool_name, {
+              status: 'done',
+              resultText: message.formatted_result,
+            });
+            updateLatestRunEvent(
+              (event) =>
+                event.type === 'tool_call' &&
+                event.status === 'running' &&
+                event.title === `调用工具 ${message.tool_name}`,
+              {
+                status: 'done',
+                detail: '工具执行完成',
+              }
+            );
+            appendRunEvent({
+              type: 'tool_result',
+              title: `工具 ${message.tool_name} 已返回`,
+              detail: message.formatted_result?.slice(0, 220) || '工具已完成',
+              status: 'done',
+            });
             break;
             
           case 'content':
             // 最终内容
             setCurrentStreamingMessage(null);
             setStreamingMessage('');
+            setStreamAbortController(null);
+            settleRunningEvents('done');
             setMessages(prev => prev.map(msg => 
               msg.id === streamingMessageId 
                 ? {
@@ -495,20 +758,37 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
                   }
                 : msg
             ));
+            ingestArtifactsFromText(message.content);
+            appendRunEvent({
+              type: 'answer',
+              title: '生成最终回答',
+              detail: message.content.slice(0, 280),
+              status: 'done',
+            });
             break;
             
           case 'end':
             // 流式传输结束
             setCurrentStreamingMessage(null);
             setStreamingMessage('');
+            setStreamAbortController(null);
+            settleRunningEvents('done');
             // 刷新会话列表
             loadSessionList();
+            appendRunEvent({
+              type: 'status',
+              title: '本轮任务完成',
+              detail: '你可以继续追问、修改约束，或开始新的任务。',
+              status: 'done',
+            });
             break;
             
           case 'error':
             // 错误处理
             setCurrentStreamingMessage(null);
             setStreamingMessage('');
+            setStreamAbortController(null);
+            settleRunningEvents('error');
             setMessages(prev => prev.map(msg => 
               msg.id === streamingMessageId 
                 ? {
@@ -517,9 +797,39 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
                   }
                 : msg
             ));
+            appendRunEvent({
+              type: 'error',
+              title: '流式执行失败',
+              detail: message.error,
+              status: 'error',
+            });
+            break;
+
+          case 'aborted':
+            setCurrentStreamingMessage(null);
+            setStreamingMessage('');
+            setStreamAbortController(null);
+            settleRunningEvents('done');
+            setMessages(prev => prev.map(msg =>
+              msg.id === streamingMessageId
+                ? {
+                    ...msg,
+                    content: msg.content?.trim() ? msg.content : '已停止生成。',
+                    toolOutputs: toolOutputs.length > 0 ? toolOutputs : undefined
+                  }
+                : msg
+            ));
+            appendRunEvent({
+              type: 'status',
+              title: '已停止生成',
+              detail: '当前流式执行已被手动中断。',
+              status: 'done',
+            });
+            void loadSessionList();
             break;
         }
-      }
+      },
+      abortController.signal
     );
   };
   
@@ -538,6 +848,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
     });
     
     if (response.success && response.data) {
+      setActiveSkillName(typeof response.data.active_skill === 'string' ? response.data.active_skill : null);
       // 移除思考消息
       setIsThinking(false);
       setMessages(prev => prev.filter(msg => !msg.id.startsWith('thinking-')));
@@ -552,9 +863,19 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
           timestamp: new Date()
         };
         setMessages(prev => [...prev.filter(msg => !msg.id.startsWith('thinking-')), updatedThinkingMessage]);
+        appendRunEvent({
+          type: 'tool_call',
+          title: '准备执行工具调用',
+          detail: `共 ${response.data.tool_calls.length} 个工具动作`,
+          status: 'running',
+        });
         
         // 单独处理工具调用
         try {
+          response.data.tool_calls.forEach((toolCall: { function?: { name?: string; arguments?: string } }) => {
+            const name = toolCall.function?.name || 'unknown_tool';
+            startToolInvocation(name, toolCall.function?.arguments);
+          });
           const toolResponse = await executeAgentTool(
             response.data.tool_calls,
             selectedAccount ? {
@@ -576,22 +897,67 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
             // 移除思考消息，添加助手回复
             setIsThinking(false);
             setMessages(prev => [...prev.filter(msg => !msg.id.startsWith('thinking-')), assistantMessage]);
+            (toolResponse.data.responses || []).forEach((toolItem: { output?: string; tool_call_id?: string }, index: number) => {
+              const toolName = response.data.tool_calls[index]?.function?.name || `tool_${index + 1}`;
+              finishLatestToolInvocation(toolName, {
+                status: 'done',
+                resultText: toolItem.output,
+              });
+              updateLatestRunEvent(
+                (event) =>
+                  event.type === 'tool_call' &&
+                  event.status === 'running' &&
+                  (event.title === `调用工具 ${toolName}` || event.title === '准备执行工具调用'),
+                {
+                  status: 'done',
+                }
+              );
+              if (toolItem.output) {
+                registerArtifact({
+                  kind: 'tool_output',
+                  title: `工具结果 · ${toolName}`,
+                  content: toolItem.output.slice(0, 500),
+                });
+                appendRunEvent({
+                  type: 'tool_result',
+                  title: `工具 ${toolName} 已完成`,
+                  detail: toolItem.output.slice(0, 220),
+                  status: 'done',
+                });
+              }
+            });
+            ingestArtifactsFromText(assistantMessage.content);
+            settleRunningEvents('done');
+            appendRunEvent({
+              type: 'answer',
+              title: '生成最终回答',
+              detail: assistantMessage.content.slice(0, 280),
+              status: 'done',
+            });
           } else {
             // 工具调用失败
             throw new Error(toolResponse.error || '工具调用失败');
           }
-        } catch (error: any) {
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : '未知错误';
           console.error('工具调用出错:', error);
           const errorMessage: Message = {
             id: generateId(),
             role: 'assistant',
-            content: `执行工具时出错: ${error.message || '未知错误'}`,
+            content: `执行工具时出错: ${message}`,
             timestamp: new Date()
           };
           
           // 移除思考消息，添加错误消息
           setIsThinking(false);
           setMessages(prev => [...prev.filter(msg => !msg.id.startsWith('thinking-')), errorMessage]);
+          settleRunningEvents('error');
+          appendRunEvent({
+            type: 'error',
+            title: '工具执行失败',
+            detail: message,
+            status: 'error',
+          });
         }
       } else {
         // 没有工具调用，直接显示回复
@@ -604,6 +970,14 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
         };
         
         setMessages(prev => [...prev, assistantMessage]);
+        ingestArtifactsFromText(assistantMessage.content);
+        settleRunningEvents('done');
+        appendRunEvent({
+          type: 'answer',
+          title: '生成直接回答',
+          detail: assistantMessage.content.slice(0, 280),
+          status: 'done',
+        });
       }
       
       // 更新会话ID
@@ -614,11 +988,6 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
         loadSessionList();
       }
       
-      // 检查是否有股票代码可以点击
-      if (onSelectStock && response.data.content.match(/\$[A-Z0-9\.]+/)) {
-        const stockCode = response.data.content.match(/\$([A-Z0-9\.]+)/)[1];
-        // 可以实现点击股票代码跳转功能
-      }
     } else {
       // 移除思考消息
       setIsThinking(false);
@@ -631,11 +1000,18 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
         timestamp: new Date()
       };
       setMessages(prev => [...prev, errorMessage]);
+      settleRunningEvents('error');
+      appendRunEvent({
+        type: 'error',
+        title: '响应失败',
+        detail: response.error || '与智能助手通信时出错',
+        status: 'error',
+      });
     }
   };
   
   // 键盘事件处理
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -644,7 +1020,9 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
   
   // 新建会话
   const handleNewChat = () => {
+    setActiveView('conversation');
     setCurrentSession(null);
+    setActiveSkillName(null);
     setMessages([
       {
         id: '1',
@@ -653,6 +1031,21 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
         timestamp: new Date()
       }
     ]);
+    setRunEvents([
+      {
+        id: generateId(),
+        type: 'status',
+        title: '新的任务工作台已创建',
+        detail: '输入一个新的目标，agent 会把它作为任务来执行。',
+        status: 'done',
+        createdAt: createTimestamp(),
+      },
+    ]);
+    setToolInvocations([]);
+    setArtifacts([]);
+    setStreamingMessage('');
+    setCurrentStreamingMessage(null);
+    setShowSidebar(false);
     
     // 聚焦输入框
     inputRef.current?.focus();
@@ -660,19 +1053,14 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
 
   // 切换会话
   const switchSession = (sessionId: string) => {
+    setShowSidebar(false);
+    setActiveView('conversation');
     loadSessionHistory(sessionId);
   };
   
-  // 复制消息内容
-  const copyMessageContent = (content: string) => {
-    navigator.clipboard.writeText(content);
-    alert('已复制到剪贴板');
-  };
-
   // 渲染消息列表
   const renderMessages = () => {
     return messages.map((message, index) => {
-      const isUser = message.role === 'user';
       const isThinking = message.id.startsWith('thinking-');
       const isStreaming = message.id.startsWith('streaming-');
       const isLast = index === messages.length - 1;
@@ -740,42 +1128,6 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
     });
   };
 
-  // 渲染会话列表项
-  const renderSessionItem = (session: Session) => {
-    const isActive = currentSession === session.id;
-    
-    // 处理标题长度，超过12个字符则截断
-    const displayTitle = session.title.length > 12 
-      ? session.title.substring(0, 12) + "..."
-      : session.title;
-    
-    return (
-      <div 
-        key={session.id}
-        className={`flex items-center gap-3 p-3 cursor-pointer text-sm mb-1 ${
-          isActive ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'hover:bg-gray-100 dark:hover:bg-gray-800'
-        } rounded-md`}
-        onClick={() => switchSession(session.id)}
-        title={session.title} // 鼠标悬停时显示完整标题
-      >
-        <MessageSquare className={`h-5 w-5 flex-shrink-0 ${isActive ? 'text-blue-600 dark:text-blue-400' : 'text-gray-600 dark:text-gray-400'}`} />
-        <div className="flex-1 min-w-0">
-          <div className="font-medium truncate">{displayTitle}</div>
-          <div className="text-xs text-gray-500 truncate">
-            {session.last_updated ? format(new Date(session.last_updated), 'MM/dd HH:mm') : ''}
-          </div>
-        </div>
-        <button 
-          className="opacity-60 hover:opacity-100 flex-shrink-0"
-          onClick={(e) => handleDeleteSession(session.id, e)}
-          aria-label="删除会话"
-        >
-          <Trash2 className="h-4 w-4 text-red-500 dark:text-red-400" />
-        </button>
-      </div>
-    );
-  };
-  
   // 示例快速提问
   const examples = [
     {
@@ -795,20 +1147,6 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
       icon: <PieChart className="h-4 w-4 mr-1.5" />
     }
   ];
-
-  const renderExample = (example: {text: string, icon: React.ReactNode}) => (
-    <button
-      key={example.text}
-      className="text-sm flex items-center px-4 py-3 rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-      onClick={() => {
-        setInput(example.text);
-        inputRef.current?.focus();
-      }}
-    >
-      <span className="text-gray-500 dark:text-gray-400">{example.icon}</span>
-      <span className="dark:text-gray-300">{example.text}</span>
-    </button>
-  );
 
   // 处理搜索功能
   const handleSearch = () => {
@@ -845,13 +1183,165 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
       ? input.trim()
       : `/search ${input.trim()}`;
     
-    // 使用修改后的查询调用handleSendMessage
     setInput(searchQuery);
-    setTimeout(() => handleSendMessage(), 0);
+    void submitMessage(searchQuery);
   };
 
   // 检查用户是否有足够积分使用联网搜索
   const canUseWebSearch = user && user.points >= 2000;
+
+  const latestToolOutputs = [...messages]
+    .reverse()
+    .find((message) => message.role === 'assistant' && message.toolOutputs && message.toolOutputs.length > 0)
+    ?.toolOutputs || [];
+
+  const hasActiveConversation = messages.length > 1 || !!currentSession || isLoading || runEvents.length > 1;
+  const latestUserGoal = [...messages].reverse().find((message) => message.role === 'user')?.content;
+  const latestUserGoalBrief = latestUserGoal ? toBrief(latestUserGoal) : '';
+
+  const buildAutomationPayload = useCallback(() => {
+    const promptTemplate = automationConfig.promptTemplate.trim() || latestUserGoal || input.trim();
+    const publishTitle = automationConfig.publishTitle.trim() || automationConfig.taskName.trim() || '自动化报告';
+    const publishCollectionSlug = slugify(automationConfig.publishCollectionSlug.trim() || 'daily-market-brief');
+    const publishSlug = normalizeSlugTemplate(automationConfig.publishSlug.trim() || 'review-{date_compact}');
+
+    return {
+      task_type: 'skill_publish_job',
+      interval: 86400,
+      is_enabled: true,
+      description: automationConfig.taskName.trim() || publishTitle,
+      params: {
+        daily_time: automationConfig.dailyTime,
+        timezone: automationConfig.timezone.trim() || 'Asia/Shanghai',
+        skill_name: automationConfig.skillName,
+        prompt_template: promptTemplate,
+        enable_web_search: automationConfig.enableWebSearch,
+        publish_title: publishTitle,
+        publish_collection_slug: publishCollectionSlug,
+        publish_slug: publishSlug,
+        mcp_servers: automationConfig.selectedMcpServerIds,
+        model: model || undefined,
+        account_id: selectedAccount?.id,
+        account_provider: selectedAccount?.provider,
+        account_name: selectedAccount?.name,
+      },
+    };
+  }, [automationConfig, latestUserGoal, input, model, selectedAccount]);
+
+  const handleAutomationConfigChange = useCallback((updates: Partial<AutomationConfig>) => {
+    setAutomationConfig((prev) => {
+      const next = { ...prev, ...updates };
+      if (updates.publishTitle && !updates.publishSlug) {
+        next.publishSlug = slugify(updates.publishTitle);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleMcpServer = useCallback((serverId: string) => {
+    setAutomationConfig((prev) => ({
+      ...prev,
+      selectedMcpServerIds: prev.selectedMcpServerIds.includes(serverId)
+        ? prev.selectedMcpServerIds.filter((id) => id !== serverId)
+        : [...prev.selectedMcpServerIds, serverId],
+    }));
+  }, []);
+
+  const handleSaveAutomation = useCallback(async () => {
+    setIsSavingAutomation(true);
+    setAutomationFeedback(null);
+    try {
+      const payload = buildAutomationPayload();
+      const response = automationTaskId
+        ? await updateTask(automationTaskId, {
+            interval: payload.interval,
+            is_enabled: payload.is_enabled,
+            description: payload.description,
+            params: payload.params,
+          })
+        : await createTask(payload);
+
+      if (response.success && response.data) {
+        hydrateAutomationTask(response.data);
+        void loadAutomationTask();
+        setAutomationFeedback(`已保存自动化任务：${response.data.description}`);
+      } else {
+        setAutomationFeedback(response.error || '保存自动化任务失败');
+      }
+    } catch (error) {
+      console.error('保存自动化任务失败:', error);
+      setAutomationFeedback('保存自动化任务失败');
+    } finally {
+      setIsSavingAutomation(false);
+    }
+  }, [automationTaskId, buildAutomationPayload, hydrateAutomationTask, loadAutomationTask]);
+
+  const handleRunAutomationNow = useCallback(async () => {
+    if (!automationTaskId) {
+      setAutomationFeedback('请先保存自动化任务');
+      return;
+    }
+    setIsRunningAutomation(true);
+    setAutomationFeedback(null);
+    try {
+      const response = await runTaskNow(automationTaskId);
+      if (response.success && response.data) {
+        const data = response.data as TaskInfo;
+        hydrateAutomationTask(data);
+        setActiveView('automation');
+        void loadSessionList();
+        void loadAutomationTask();
+        const publishedUrl = typeof data?.result?.published_url === 'string' ? data.result.published_url : null;
+        if (publishedUrl) {
+          setAutomationPublishUrl(publishedUrl);
+          setAutomationFeedback(`运行完成，已发布到 ${publishedUrl}`);
+        } else {
+          setAutomationFeedback(data?.description || '任务已开始运行');
+        }
+      } else {
+        setAutomationFeedback(response.error || '运行自动化任务失败');
+      }
+    } catch (error) {
+      console.error('运行自动化任务失败:', error);
+      setAutomationFeedback('运行自动化任务失败');
+    } finally {
+      setIsRunningAutomation(false);
+    }
+  }, [automationTaskId, hydrateAutomationTask, loadSessionList, loadAutomationTask]);
+
+  const handleDeleteAutomationTask = useCallback(async () => {
+    if (!automationTaskId) return;
+    if (!window.confirm('确定要删除当前自动化任务吗？')) {
+      return;
+    }
+    setIsDeletingAutomation(true);
+    try {
+      const response = await deleteTask(automationTaskId);
+      if (response.success) {
+        setAutomationFeedback('自动化任务已删除');
+        await loadAutomationTask();
+      } else {
+        setAutomationFeedback(response.error || '删除自动化任务失败');
+      }
+    } catch (error) {
+      console.error('删除自动化任务失败:', error);
+      setAutomationFeedback('删除自动化任务失败');
+    } finally {
+      setIsDeletingAutomation(false);
+    }
+  }, [automationTaskId, loadAutomationTask]);
+
+  const handleRefreshWorkspace = useCallback(() => {
+    void loadSessionList();
+    void loadAutomationTask();
+  }, [loadSessionList, loadAutomationTask]);
+
+  const handleStopGenerating = useCallback(() => {
+    if (streamAbortController) {
+      streamAbortController.abort();
+      setStreamAbortController(null);
+    }
+  }, [streamAbortController]);
 
   // 切换联网搜索状态
   const toggleWebSearch = () => {
@@ -863,165 +1353,229 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
   };
 
   return (
-    <div className="flex h-[calc(100vh-60px)] bg-white dark:bg-gray-900">
-      {/* 会话侧边栏 */}
-      <div 
-        className={`h-full border-r border-gray-200 dark:border-gray-700 ${
-          showSidebar ? 'block absolute z-10 w-72 shadow-lg' : 'hidden'
-        } md:block md:relative md:w-72 md:shadow-none`}
+    <div className="flex h-full min-h-0 overflow-hidden bg-background text-foreground">
+      {showSidebar && (
+        <button
+          type="button"
+          className="fixed inset-0 z-20 bg-slate-950/45 backdrop-blur-[1px] md:hidden"
+          onClick={() => setShowSidebar(false)}
+          aria-label="关闭任务列表"
+        />
+      )}
+      <div
+        className={`${
+          showSidebar ? 'fixed inset-y-0 left-0 z-30 w-[340px] max-w-[92vw] shadow-2xl shadow-slate-950/30' : 'hidden'
+        } md:relative md:block md:h-full md:w-[340px] md:shadow-none xl:w-[360px]`}
       >
-        <div className="h-full flex flex-col">
-          <div className="p-3 border-b border-gray-200 dark:border-gray-700">
-            <Button 
-              variant="outline" 
-              className="w-full justify-start text-sm gap-2"
-              onClick={handleNewChat}
-            >
-              <Plus className="h-4 w-4" />
-              新建会话
-            </Button>
-          </div>
-          
-          <ScrollArea className="flex-1 p-3">
-            {isFetchingSessions ? (
-              <div className="flex justify-center py-4">
-                <Loader2 className="h-5 w-5 animate-spin text-gray-400 dark:text-gray-500" />
-              </div>
-            ) : sessionList.length > 0 ? (
-              sessionList.map(session => renderSessionItem(session))
-            ) : (
-              <div className="text-center py-6 text-sm text-gray-500 dark:text-gray-400">
-                没有历史会话
-              </div>
-            )}
-          </ScrollArea>
-        </div>
+        <AgentRunSidebar
+          activeView={activeView}
+          currentSession={currentSession}
+          automationLabel={automationTaskInfo?.description || automationConfig.taskName}
+          isFetchingSessions={isFetchingSessions}
+          sessions={sessionList}
+          onNewChat={handleNewChat}
+          onOpenAutomation={() => {
+            setActiveView('automation');
+            setShowSidebar(false);
+          }}
+          onRefresh={handleRefreshWorkspace}
+          onSelectSession={switchSession}
+          onDeleteSession={handleDeleteSession}
+        />
       </div>
 
-      {/* 主聊天区域 */}
-      <div className="flex-1 flex flex-col h-full bg-white dark:bg-gray-900">
-        {/* 聊天头部 */}
-        <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-10">
-          <div className="flex items-center">
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              className="md:hidden mr-2"
-              onClick={() => setShowSidebar(!showSidebar)}
-            >
-              <MessageSquare className="h-5 w-5" />
-            </Button>
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 dark:bg-blue-700">
-                <Bot className="h-5 w-5 text-white" />
-              </div>
-              <div>
-                <div className="font-medium dark:text-gray-100">AlphaBot 智能助手</div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">
-                  {isLoadingSession ? '正在加载会话...' : currentSession ? '会话进行中' : '新会话'}
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          {/* 模型选择 + 联网搜索和流式传输开关 */}
-          <div className="flex items-center gap-2">
-            <div className="hidden md:flex items-center">
-              <select
-                value={model ?? ''}
-                onChange={(e) => setModel(e.target.value || null)}
-                className="text-xs h-8 px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
-                title="选择模型"
-              >
-                {availableModels.map(m => (
-                  <option key={m.value} value={m.value}>{m.label}</option>
-                ))}
-              </select>
-            </div>
+      <div className="flex min-w-0 flex-1 overflow-hidden">
+        <main className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
+          <AgentWorkspaceHeader
+            currentSession={currentSession}
+            isLoadingSession={isLoadingSession}
+            isLoading={isLoading}
+            activeSkillName={activeSkillName}
+            streamEnabled={streamEnabled}
+            webSearchEnabled={webSearchEnabled}
+            canUseWebSearch={!!canUseWebSearch}
+            model={model}
+            availableModels={availableModels}
+            onModelChange={setModel}
+            onToggleStream={() => setStreamEnabled(!streamEnabled)}
+            onToggleWebSearch={toggleWebSearch}
+            onOpenRuns={() => setShowSidebar(!showSidebar)}
+            onOpenInspector={() => setActiveView('automation')}
+          />
 
-            <div className="flex items-center">
-              <Button
-                variant={webSearchEnabled ? "primary" : "outline"}
-                size="sm"
-                className={`gap-1 ${!canUseWebSearch ? 'opacity-60 cursor-not-allowed' : ''}`}
-                disabled={!canUseWebSearch}
-                onClick={toggleWebSearch}
-                title={canUseWebSearch ? "开启/关闭联网搜索" : "需要2000积分才能使用联网搜索"}
-              >
-                <Globe className="h-4 w-4" />
-                <span className="text-xs">联网搜索</span>
-                <span className={`${"ml-1 h-2 w-2 rounded-full"} ${webSearchEnabled ? 'bg-green-500' : 'bg-gray-300'}`}></span>
-              </Button>
-            </div>
-            
-            <div className="flex items-center">
-              <Button
-                variant={streamEnabled ? "primary" : "outline"}
-                size="sm"
-                className="gap-1"
-                onClick={() => setStreamEnabled(!streamEnabled)}
-                title="开启/关闭流式传输"
-              >
-                <div className="h-4 w-4 flex items-center justify-center">
-                  <div className={`h-2 w-2 rounded-full ${streamEnabled ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`}></div>
-                </div>
-                <span className="text-xs">流式传输</span>
-              </Button>
-            </div>
-          </div>
-        </div>
+          <div className="min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top,_rgba(37,99,235,0.06),_transparent_26%),linear-gradient(to_bottom,_rgba(255,255,255,0.98),_rgba(248,250,252,1))] dark:bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.10),_transparent_20%),linear-gradient(to_bottom,_#020617,_#0f172a)]">
+            {isLoadingSession ? (
+              <div className="flex h-full items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              </div>
+            ) : activeView === 'automation' ? (
+              <div className="mx-auto flex min-h-full w-full max-w-[1160px] flex-col px-4 py-4 sm:px-6 xl:px-8">
+                <section className="mb-4 px-1 py-1">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Automation</div>
+                      <div className="mt-1 text-[1rem] font-semibold tracking-[-0.03em] text-foreground">
+                        {automationTaskInfo?.description || automationConfig.taskName}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {automationTaskInfo?.status && (
+                        <span className="rounded-full bg-muted px-2.5 py-1 text-[10px] text-muted-foreground">
+                          {automationTaskInfo.status}
+                        </span>
+                      )}
+                      {automationTaskInfo?.next_run && (
+                        <span className="rounded-full bg-muted px-2.5 py-1 text-[10px] text-muted-foreground">
+                          下次 {new Date(automationTaskInfo.next_run).toLocaleString()}
+                        </span>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-2xl border-transparent bg-muted/80 hover:bg-muted"
+                        disabled={!automationTaskId || isDeletingAutomation}
+                        onClick={handleDeleteAutomationTask}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        {isDeletingAutomation ? '删除中' : '删除任务'}
+                      </Button>
+                    </div>
+                  </div>
+                </section>
 
-        {/* 消息区域 */}
-        <div className="flex-1 overflow-auto bg-gray-50 dark:bg-gray-800">
-          {isLoadingSession ? (
-            <div className="flex items-center justify-center h-full">
-              <Loader2 className="h-8 w-8 animate-spin text-blue-600 dark:text-blue-400" />
-            </div>
-          ) : (
-            <>
-              {renderMessages()}
-              <div ref={messagesEndRef} />
-            </>
-          )}
-        </div>
-        
-        {/* 输入区域 */}
-        <div className="p-3 md:p-4 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
-          {messages.length === 1 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 md:gap-3 mb-4">
-              {examples.map(renderExample)}
-            </div>
-          )}
-          
-          <div className="flex gap-2">
-            <Input
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="输入您的问题或使用 /search 进行网络搜索..."
+                <section className="min-h-0 flex-1 rounded-[28px] bg-card/72 p-4 ring-1 ring-border/50 backdrop-blur sm:p-5">
+                  <AgentInspector
+                    embedded
+                    model={model}
+                    selectedAccount={selectedAccount || null}
+                    config={automationConfig}
+                    skillOptions={skillOptions}
+                    externalMcpServers={externalMcpServers}
+                    isSaving={isSavingAutomation}
+                    isRunning={isRunningAutomation}
+                    savedTaskId={automationTaskId}
+                    publishUrl={automationPublishUrl}
+                    feedbackMessage={automationFeedback}
+                    taskStatus={automationTaskInfo?.status || null}
+                    nextRun={automationTaskInfo?.next_run || null}
+                    lastRun={automationTaskInfo?.last_run || null}
+                    isRefreshingSkills={isRefreshingSkills}
+                    onConfigChange={handleAutomationConfigChange}
+                    onToggleMcpServer={handleToggleMcpServer}
+                    onRefreshSkills={() => void loadSkillOptions()}
+                    onSave={handleSaveAutomation}
+                    onRunNow={handleRunAutomationNow}
+                  />
+                </section>
+              </div>
+            ) : (
+              <div className="mx-auto flex min-h-full w-full max-w-[1180px] flex-col px-4 py-4 sm:px-6 xl:px-8">
+                <section className="mb-4 px-1 py-1">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="min-w-0 max-w-3xl">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Run</div>
+                      <div className="mt-1 text-[0.96rem] font-semibold tracking-[-0.03em] text-foreground sm:text-[1rem]">
+                        {latestUserGoalBrief
+                          ? latestUserGoalBrief
+                          : '输入一个明确目标，开始新的分析任务'}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
+                      <span className="rounded-full bg-muted px-2.5 py-1">
+                        {isLoading ? '运行中' : currentSession ? '进行中' : '待启动'}
+                      </span>
+                      <span className="rounded-full bg-muted px-2.5 py-1">
+                        {messages.length} 条消息
+                      </span>
+                      <span className="rounded-full bg-muted px-2.5 py-1">
+                        联网{webSearchEnabled ? '已开启' : '未开启'}
+                      </span>
+                    </div>
+                  </div>
+                </section>
+
+                {!hasActiveConversation ? (
+                  <section className="mb-4 rounded-[24px] bg-card/46 p-5 sm:p-6">
+                    <div className="max-w-2xl">
+                      <h2 className="text-[0.96rem] font-semibold tracking-[-0.03em] text-foreground sm:text-[1rem]">
+                        从一个具体问题开始
+                      </h2>
+                      <p className="mt-1.5 text-[12px] leading-5 text-muted-foreground">
+                        比如分析一只股票、比较两家公司，或者梳理一个板块的风险与机会。
+                      </p>
+                    </div>
+                    <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                          {examples.map((example) => (
+                            <button
+                              key={`hero-${example.text}`}
+                              type="button"
+                              className="flex items-center gap-2.5 rounded-[18px] bg-background/70 px-3.5 py-3 text-left text-[12px] text-foreground transition-colors hover:bg-primary/5"
+                              onClick={() => {
+                                setInput(example.text);
+                                inputRef.current?.focus();
+                              }}
+                            >
+                              <span className="flex h-7 w-7 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                                {example.icon}
+                              </span>
+                              <span>{example.text}</span>
+                            </button>
+                          ))}
+                    </div>
+                  </section>
+                ) : (
+                  <div className="min-h-0 flex-1">
+                    <section className="flex h-full min-h-[320px] flex-col px-3 py-2 sm:px-4 sm:py-3">
+                      <div className="mb-3 flex items-center justify-between gap-4">
+                        <div>
+                          <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Conversation</div>
+                          <h3 className="mt-1 text-[0.95rem] font-semibold tracking-[-0.03em] text-foreground">对话与结果</h3>
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">{messages.length} 条消息</div>
+                      </div>
+
+                      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                        <div className="space-y-0.5">
+                        {renderMessages()}
+                        <div ref={messagesEndRef} />
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                {hasActiveConversation && (
+                  <div className="mt-4 sm:hidden">
+                    <Button variant="outline" size="sm" className="rounded-2xl border-0 bg-muted/70 shadow-none" onClick={() => setActiveView('automation')}>
+                      查看自动化配置
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {activeView !== 'automation' && (
+            <AgentComposer
+              input={input}
               disabled={isLoading || isLoadingSession}
-              className="flex-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100"
+              isLoading={isLoading}
+              showExamples={messages.length === 1}
+              examples={examples}
+              onInputChange={setInput}
+              onKeyDown={handleKeyDown}
+              onSubmit={handleSendMessage}
+              onStop={handleStopGenerating}
+              onSearch={handleSearch}
+              onSelectExample={(value) => {
+                setInput(value);
+                inputRef.current?.focus();
+              }}
+              inputRef={inputRef}
             />
-            
-            <Button 
-              onClick={handleSendMessage} 
-              disabled={!input.trim() || isLoading || isLoadingSession}
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              {isLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="h-4 w-4" />
-              )}
-            </Button>
-          </div>
-          
-          <div className="text-xs text-center text-gray-400 dark:text-gray-500 mt-2">
-            结果仅供参考，不构成投资建议
-          </div>
-        </div>
+          )}
+        </main>
       </div>
     </div>
   );
-} 
+}

@@ -27,6 +27,7 @@ from app.services.alert_service import AlertService
 from app.services.mcp_token_service import McpTokenService
 from app.core.mcp_host import McpHostRegistry
 from app.services.account import AccountService
+from app.services.custom_skill_service import CustomSkillService
 from app.utils.response import api_response
 
 router = APIRouter()
@@ -287,6 +288,115 @@ async def refresh_external_mcp_servers(
         return api_response(data={"servers": McpHostRegistry.list_server_overview()})
     except Exception as e:
         return api_response(success=False, error=str(e))
+
+
+class SkillToggleRequest(BaseModel):
+    enabled: bool
+
+
+def _builtin_skill_items() -> list[dict]:
+    return [
+        {
+            "name": "research",
+            "label": "Research",
+            "description": "适合每日市场研究、热点梳理和资讯摘要。",
+            "enabled": True,
+            "kind": "builtin",
+            "manageable": False,
+        },
+        {
+            "name": "portfolio",
+            "label": "Portfolio",
+            "description": "适合围绕持仓、组合和账户上下文生成输出。",
+            "enabled": True,
+            "kind": "builtin",
+            "manageable": False,
+        },
+        {
+            "name": "risk",
+            "label": "Risk",
+            "description": "适合风控巡检、回撤监控和风险提示。",
+            "enabled": True,
+            "kind": "builtin",
+            "manageable": False,
+        },
+        {
+            "name": "general",
+            "label": "General",
+            "description": "适合综合性任务，由通用助手执行。",
+            "enabled": True,
+            "kind": "builtin",
+            "manageable": False,
+        },
+        {
+            "name": "alert",
+            "label": "Alert",
+            "description": "适合预警策略、提醒规则和触发结果整理。",
+            "enabled": True,
+            "kind": "builtin",
+            "manageable": False,
+        },
+    ]
+
+
+def _custom_skill_items() -> list[dict]:
+    return [
+        {
+            "name": item.name,
+            "label": item.label,
+            "description": item.description,
+            "enabled": item.enabled,
+            "kind": "custom",
+            "manageable": True,
+        }
+        for item in CustomSkillService.list_skills(include_disabled=True)
+    ]
+
+
+@router.get("/admin/skills", response_model=dict)
+async def list_custom_skills(
+    current_user: User = Depends(get_current_admin),
+):
+    """管理员查看 Skill 清单。"""
+    return api_response(data=_builtin_skill_items() + _custom_skill_items())
+
+
+@router.post("/admin/skills/refresh", response_model=dict)
+async def refresh_custom_skills(
+    current_user: User = Depends(get_current_admin),
+):
+    """管理员刷新 Skill 清单。"""
+    return api_response(data=_builtin_skill_items() + _custom_skill_items())
+
+
+@router.patch("/admin/skills/{skill_name}", response_model=dict)
+async def update_custom_skill_status(
+    skill_name: str,
+    payload: SkillToggleRequest,
+    current_user: User = Depends(get_current_admin),
+):
+    """管理员启用/禁用本地 Skill。"""
+    ok = CustomSkillService.set_skill_enabled(skill_name, payload.enabled)
+    if not ok:
+        return api_response(success=False, error="Skill not found")
+
+    skill = next(
+        (item for item in CustomSkillService.list_skills(include_disabled=True) if item.name == skill_name),
+        None,
+    )
+    if skill is None:
+        return api_response(success=False, error="Skill not found")
+
+    return api_response(
+        data={
+            "name": skill.name,
+            "label": skill.label,
+            "description": skill.description,
+            "enabled": skill.enabled,
+            "kind": "custom",
+            "manageable": True,
+        }
+    )
 
 @router.get("/saved-stocks", response_model=dict)
 async def get_saved_stocks(
