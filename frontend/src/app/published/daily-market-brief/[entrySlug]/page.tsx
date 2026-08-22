@@ -86,6 +86,14 @@ export default function DailyMarketBriefEntryPage({ params }: { params: Promise<
           content={normalizePublishedContent(payload.content)}
           className="prose prose-slate max-w-none dark:prose-invert"
         />
+
+        <div className="mt-8 rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm leading-6 text-muted-foreground">
+          <div className="font-medium text-foreground">AlphaBot 声明</div>
+          <p className="mt-1">
+            本日报由 AlphaBot 基于公开市场数据、已启用技能与工具链自动生成，仅供研究与信息参考，不构成任何投资建议。
+            市场有风险，决策请结合自身判断与风险承受能力。
+          </p>
+        </div>
       </div>
     </main>
   );

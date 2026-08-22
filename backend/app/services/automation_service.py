@@ -166,7 +166,7 @@ class AutomationService:
         return "市场复盘"
 
     @classmethod
-    def _normalize_brief(cls, brief: str, max_chars: int = 18) -> str:
+    def _normalize_brief(cls, brief: str, max_chars: int = 24) -> str:
         normalized = re.sub(r"\s+", "", str(brief or ""))
         normalized = re.sub(r"[`#*_>\[\]\(\)]+", "", normalized).strip("，。；：,:、 ")
         if not normalized:
@@ -182,7 +182,7 @@ class AutomationService:
 
         prompt = (
             "请为下面这份中文市场复盘/报告提炼一个极短标题短语，要求：\n"
-            "1. 不超过18个汉字；\n"
+            "1. 不超过24个汉字；\n"
             "2. 不带日期、不带标点、不带引号；\n"
             "3. 直接输出短语本身，不要解释。\n\n"
             f"内容：\n{body[:4000]}"
@@ -396,19 +396,61 @@ class AutomationService:
                 if str(notify_channel.get("type")).lower() == "webhook":
                     notification_target = notify_channel.get("webhook_url")
             if notify_channel and notify_channel.get("type") and notification_target:
+                await cls._emit_progress(
+                    progress_callback,
+                    "notifying",
+                    "正在发送推送通知。",
+                    {
+                        "channel": str(notify_channel.get("type")),
+                        "target": str(notification_target),
+                    },
+                )
                 notify_text = (
-                    f"{published['title']}\n"
+                    f"AlphaBot 市场日报｜{published['title']}\n"
                     f"已发布：{cls.build_public_report_url(collection_slug, entry_slug)}"
                 )
                 try:
+                    logger.info(
+                        "自动化任务发送推送通知: task_id=%s channel=%s target=%s body=%s",
+                        task_id,
+                        str(notify_channel.get("type")),
+                        str(notification_target),
+                        notify_text,
+                    )
                     notification_result = await send_channel_message(
                         str(notify_channel.get("type")),
                         notification_target,
                         notify_text,
                     )
+                    logger.info(
+                        "自动化任务推送通知结果: task_id=%s success=%s result=%s",
+                        task_id,
+                        notification_result.get("success") if isinstance(notification_result, dict) else None,
+                        notification_result,
+                    )
+                    await cls._emit_progress(
+                        progress_callback,
+                        "notified" if notification_result.get("success") else "notify_failed",
+                        "推送通知已发送。" if notification_result.get("success") else "推送通知发送失败。",
+                        notification_result if isinstance(notification_result, dict) else None,
+                    )
                 except Exception as exc:
                     logger.error("自动化发布通知发送失败: %s", exc)
                     notification_result = {"success": False, "error": str(exc)}
+                    logger.error(
+                        "自动化任务推送通知异常: task_id=%s channel=%s target=%s body=%s error=%s",
+                        task_id,
+                        str(notify_channel.get("type")),
+                        str(notification_target),
+                        notify_text,
+                        str(exc),
+                    )
+                    await cls._emit_progress(
+                        progress_callback,
+                        "notify_failed",
+                        "推送通知发送失败。",
+                        notification_result,
+                    )
 
             return {
                 "task_id": task_id,

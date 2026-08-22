@@ -85,23 +85,57 @@ async def _send_feishu_message(chat_id: str, text: str) -> bool:
         return False
 
 
-async def _send_webhook_message(webhook_url: str, text: str) -> bool:
+def _build_webhook_payload(webhook_url: str, text: str) -> Dict[str, Any]:
+    _ = webhook_url
+    return {
+        "msgtype": "text",
+        "text": {
+            "content": text,
+        },
+    }
+
+
+def _parse_response_body(resp: httpx.Response) -> Any:
+    content_type = (resp.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        try:
+            return resp.json()
+        except Exception:  # noqa: BLE001
+            return resp.text[:2000]
+    return resp.text[:2000]
+
+
+async def _send_webhook_message(webhook_url: str, text: str) -> Dict[str, Any]:
     if not webhook_url:
         logger.warning("发送 Webhook 消息跳过: webhook_url 为空。")
-        return False
+        return {"success": False, "error": "webhook_url 为空"}
+    payload = _build_webhook_payload(webhook_url, text)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 webhook_url,
-                json={
-                    "text": text,
-                },
+                json=payload,
             )
-            resp.raise_for_status()
-            return True
+            response_body = _parse_response_body(resp)
+            success = not resp.is_error
+            if isinstance(response_body, dict):
+                if "errcode" in response_body:
+                    success = success and response_body.get("errcode") in (0, "0")
+                elif "code" in response_body:
+                    success = success and response_body.get("code") in (0, "0", None)
+            return {
+                "success": success,
+                "status_code": resp.status_code,
+                "response_body": response_body,
+                "request_body": payload,
+            }
     except Exception as e:  # noqa: BLE001
         logger.error("发送 Webhook 通知失败: %s", e)
-        return False
+        return {
+            "success": False,
+            "error": str(e),
+            "request_body": payload,
+        }
 
 
 async def notify_alert(rule: AlertRule, trigger: AlertTrigger) -> None:
@@ -158,7 +192,11 @@ async def send_channel_message(channel: str, chat_id: Any, text: str) -> Dict[st
         return {"success": success, "channel": "feishu", "chat_id": chat_id}
 
     if ch == "webhook":
-        success = await _send_webhook_message(str(chat_id), text)
-        return {"success": success, "channel": "webhook", "webhook_url": chat_id}
+        result = await _send_webhook_message(str(chat_id), text)
+        return {
+            "channel": "webhook",
+            "webhook_url": chat_id,
+            **result,
+        }
 
     return {"success": False, "error": f"不支持的渠道类型: {channel}"}
