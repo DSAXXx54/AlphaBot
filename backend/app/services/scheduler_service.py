@@ -4,11 +4,12 @@ from typing import Dict, Any, List, Callable, Awaitable, Optional
 from datetime import datetime, timedelta
 import logging
 import uuid
-import json
-import os
 import inspect
 
-from app.core.config import settings
+from sqlalchemy.orm import Session
+
+from app.db.session import SessionLocal
+from app.models.task import ScheduledTask
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -68,25 +69,6 @@ class Task:
             "params": self.params,
         }
 
-    def to_persisted_dict(self) -> Dict[str, Any]:
-        return {
-            "task_id": self.task_id,
-            "task_type": self.task_type,
-            "interval": self.interval,
-            "next_run": self.next_run,
-            "description": self.description,
-            "is_enabled": self.is_enabled,
-            "params": self.params,
-            "last_run": self.last_run,
-            "run_count": self.run_count,
-            "status": self.status,
-            "current_stage": self.current_stage,
-            "status_detail": self.status_detail,
-            "stage_history": self.stage_history,
-            "last_result": self.last_result,
-            "last_error": self.last_error,
-        }
-
 class SchedulerService:
     """定时任务调度服务"""
     
@@ -100,44 +82,135 @@ class SchedulerService:
             cls._instance._running = False
             cls._instance._task_loop = None
             cls._instance._task_lock = asyncio.Lock()  # 添加任务锁
-            cls._instance._persisted_task_states = cls._instance._load_persisted_task_states()
         return cls._instance
 
-    def _scheduler_state_path(self) -> str:
-        base_dir = settings.BASE_DIR or "./"
-        state_dir = os.path.join(base_dir, "data")
-        os.makedirs(state_dir, exist_ok=True)
-        return os.path.join(state_dir, "scheduler_tasks.json")
+    def _db(self) -> Session:
+        return SessionLocal()
 
-    def _load_persisted_task_states(self) -> Dict[str, Dict[str, Any]]:
-        try:
-            path = self._scheduler_state_path()
-            if not os.path.exists(path):
-                return {}
-            with open(path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            if isinstance(payload, dict):
-                return payload
-        except Exception as exc:
-            logger.warning("加载任务持久化状态失败: %s", exc)
-        return {}
+    @staticmethod
+    def _timestamp_to_datetime(value: Optional[float]) -> Optional[datetime]:
+        if value is None:
+            return None
+        return datetime.fromtimestamp(value)
 
-    def _save_persisted_task_states(self) -> None:
-        try:
-            path = self._scheduler_state_path()
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self._persisted_task_states, f, ensure_ascii=False, indent=2)
-        except Exception as exc:
-            logger.warning("保存任务持久化状态失败: %s", exc)
+    @staticmethod
+    def _datetime_to_timestamp(value: Optional[datetime]) -> Optional[float]:
+        if value is None:
+            return None
+        return value.timestamp()
+
+    def _hydrate_task_from_record(
+        self,
+        record: ScheduledTask,
+        func: Callable[..., Awaitable[Any]],
+        args: Optional[List[Any]] = None,
+        kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Task:
+        task = Task(
+            task_id=record.task_id,
+            func=func,
+            args=args or [],
+            kwargs=kwargs or {},
+            interval=record.interval,
+            next_run=self._datetime_to_timestamp(record.next_run),
+            description=record.description,
+            is_enabled=record.is_enabled,
+            task_type=record.task_type,
+            params=record.params or {},
+        )
+        task.last_run = self._datetime_to_timestamp(record.last_run)
+        task.run_count = record.run_count or 0
+        task.status = record.status or "pending"
+        task.current_stage = record.current_stage
+        task.status_detail = record.status_detail
+        task.stage_history = record.stage_history or []
+        task.last_result = record.last_result
+        task.last_error = record.last_error
+        return task
 
     def _persist_task_state(self, task: Task) -> None:
-        self._persisted_task_states[task.task_id] = task.to_persisted_dict()
-        self._save_persisted_task_states()
+        db = self._db()
+        try:
+            record = db.query(ScheduledTask).filter(ScheduledTask.task_id == task.task_id).first()
+            if not record:
+                record = ScheduledTask(task_id=task.task_id)
+                db.add(record)
+
+            record.task_type = task.task_type
+            record.interval = task.interval
+            record.next_run = self._timestamp_to_datetime(task.next_run)
+            record.description = task.description
+            record.is_enabled = task.is_enabled
+            record.params = task.params or {}
+            record.last_run = self._timestamp_to_datetime(task.last_run)
+            record.run_count = task.run_count
+            record.status = task.status
+            record.current_stage = task.current_stage
+            record.status_detail = task.status_detail
+            record.stage_history = task.stage_history or []
+            record.last_result = task.last_result
+            record.last_error = task.last_error
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def _remove_persisted_task_state(self, task_id: str) -> None:
-        if task_id in self._persisted_task_states:
-            del self._persisted_task_states[task_id]
-            self._save_persisted_task_states()
+        db = self._db()
+        try:
+            record = db.query(ScheduledTask).filter(ScheduledTask.task_id == task_id).first()
+            if record:
+                db.delete(record)
+                db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def _load_persisted_task_record(self, task_id: str) -> Optional[ScheduledTask]:
+        db = self._db()
+        try:
+            return db.query(ScheduledTask).filter(ScheduledTask.task_id == task_id).first()
+        finally:
+            db.close()
+
+    def restore_tasks_from_db(
+        self,
+        task_factories: Dict[str, Dict[str, Any]],
+    ) -> None:
+        db = self._db()
+        try:
+            records = db.query(ScheduledTask).all()
+            for record in records:
+                if record.task_id in self._tasks:
+                    continue
+
+                factory = task_factories.get(record.task_type)
+                if not factory:
+                    logger.warning("跳过未知任务类型的恢复: %s (%s)", record.task_id, record.task_type)
+                    continue
+
+                kwargs = dict(factory.get("kwargs") or {})
+                args = list(factory.get("args") or [])
+                if record.task_type == "skill_publish_job":
+                    kwargs["task_id"] = record.task_id
+                    kwargs["params"] = record.params or {}
+                elif record.task_type == "update_stock_data":
+                    symbol = (record.params or {}).get("symbol")
+                    args = [symbol] if symbol else []
+
+                task = self._hydrate_task_from_record(
+                    record,
+                    func=factory["func"],
+                    args=args,
+                    kwargs=kwargs,
+                )
+                self._tasks[record.task_id] = task
+        finally:
+            db.close()
     
     async def add_task(
         self, 
@@ -170,26 +243,23 @@ class SchedulerService:
             params=params,
         )
 
-        persisted = self._persisted_task_states.get(task_id)
+        persisted = self._load_persisted_task_record(task_id)
         if persisted:
-            task.task_type = str(persisted.get("task_type", task.task_type))
-            task.interval = int(persisted.get("interval", task.interval))
-            task.next_run = float(persisted.get("next_run", task.next_run))
-            task.description = str(persisted.get("description", task.description))
-            task.is_enabled = bool(persisted.get("is_enabled", task.is_enabled))
-            persisted_params = persisted.get("params")
-            if isinstance(persisted_params, dict):
-                task.params = persisted_params
-                if isinstance(task.kwargs.get("params"), dict):
-                    task.kwargs["params"] = persisted_params
-            task.last_run = persisted.get("last_run")
-            task.run_count = int(persisted.get("run_count", task.run_count) or 0)
-            task.status = str(persisted.get("status", task.status) or task.status)
-            task.current_stage = persisted.get("current_stage")
-            task.status_detail = persisted.get("status_detail")
-            task.stage_history = persisted.get("stage_history") or []
-            task.last_result = persisted.get("last_result")
-            task.last_error = persisted.get("last_error")
+            task.interval = persisted.interval
+            task.next_run = self._datetime_to_timestamp(persisted.next_run) or task.next_run
+            task.description = persisted.description
+            task.is_enabled = persisted.is_enabled
+            task.params = persisted.params or {}
+            if isinstance(task.kwargs.get("params"), dict):
+                task.kwargs["params"] = task.params
+            task.last_run = self._datetime_to_timestamp(persisted.last_run)
+            task.run_count = persisted.run_count or 0
+            task.status = persisted.status or task.status
+            task.current_stage = persisted.current_stage
+            task.status_detail = persisted.status_detail
+            task.stage_history = persisted.stage_history or []
+            task.last_result = persisted.last_result
+            task.last_error = persisted.last_error
 
         # 添加到任务列表
         async with self._task_lock:

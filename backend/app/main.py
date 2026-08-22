@@ -15,9 +15,11 @@ from app.services.scheduler_service import SchedulerService
 from app.services.telegram_poller import run_telegram_poller
 from app.services.worldcup_service import WorldCupService
 from app.services.sentiment_service import SentimentService
+from app.services.automation_service import AutomationService
 from app.core.mcp_host import McpHostRegistry
 from app.middleware import RateLimitMiddleware, start_cleanup_task, stop_cleanup_task
 from app.middleware.logging import logging_middleware
+from app.utils.stock_utils import update_stock_data_with_db
 
 # 导入所有模型以确保它们被正确注册
 from app.models.user import User, InviteCode
@@ -27,6 +29,7 @@ from app.models.portfolio import Position, TradeLog
 from app.models.alert import AlertRule, AlertTrigger
 from app.models.account import AccountConnection, AccountPosition, AccountTrade
 from app.models.sentiment import SentimentPoolRaw, SentimentDailyMetrics, SentimentSyncStatus
+from app.models.task import ScheduledTask
 
 # 初始化数据库
 from app.db.init_db import init_database
@@ -93,6 +96,17 @@ async def lifespan(app: FastAPI):
         next_run=next_run_at_shanghai(20, 0),
         description="sentiment_daily_retry",
         task_id="sentiment_daily_retry",
+    )
+
+    scheduler.restore_tasks_from_db(
+        {
+            "skill_publish_job": {
+                "func": AutomationService.execute_skill_publish_job,
+            },
+            "update_stock_data": {
+                "func": update_stock_data_with_db,
+            },
+        }
     )
 
     asyncio.create_task(run_telegram_poller())

@@ -57,6 +57,9 @@ async def create_task(
     scheduler = SchedulerService()
     
     if task.task_type == "update_stock_data":
+        params = dict(task.params or {})
+        if task.symbol:
+            params["symbol"] = task.symbol
         task_id = await scheduler.add_task(
             func=update_stock_data_with_db,
             args=[task.symbol] if task.symbol else [],
@@ -64,7 +67,7 @@ async def create_task(
             description=task.description or f"更新股票数据: {task.symbol if task.symbol else '所有'}",
             is_enabled=task.is_enabled,
             task_type=task.task_type,
-            params=task.params,
+            params=params,
         )
     elif task.task_type == "skill_publish_job":
         params = dict(task.params or {})

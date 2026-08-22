@@ -14,6 +14,7 @@ from app.models.alert import AlertRule, AlertTrigger
 from app.models.user_profile import UserProfile
 from app.models.account import AccountConnection, AccountPosition, AccountTrade
 from app.models.sentiment import SentimentPoolRaw, SentimentDailyMetrics, SentimentSyncStatus
+from app.models.task import ScheduledTask
 
 
 def _ensure_users_table_columns() -> None:
