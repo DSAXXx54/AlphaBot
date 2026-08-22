@@ -9,6 +9,7 @@ interface AgentExecutionTimelineProps {
 const iconMap = {
   goal: Flag,
   thinking: BrainCircuit,
+  phase: CircleDashed,
   tool_call: Wrench,
   tool_result: CheckCircle2,
   answer: CheckCircle2,

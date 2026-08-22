@@ -643,6 +643,16 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
               status: 'done',
             });
             break;
+
+          case 'phase':
+            setStreamingMessage(message.detail || message.title || '');
+            appendRunEvent({
+              type: 'phase',
+              title: message.title || '阶段更新',
+              detail: message.detail || message.phase || '',
+              status: 'running',
+            });
+            break;
           
           case 'delta':
             // 增量内容
@@ -847,7 +857,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
       } : undefined,
     });
     
-    if (response.success && response.data) {
+      if (response.success && response.data) {
       setActiveSkillName(typeof response.data.active_skill === 'string' ? response.data.active_skill : null);
       // 移除思考消息
       setIsThinking(false);
@@ -972,6 +982,14 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
         setMessages(prev => [...prev, assistantMessage]);
         ingestArtifactsFromText(assistantMessage.content);
         settleRunningEvents('done');
+        if (response.data.metadata?.staged_response_used) {
+          appendRunEvent({
+            type: 'phase',
+            title: '最终成稿',
+            detail: `本次回复已走成稿阶段 · ${response.data.metadata?.completion_reason || 'completed'}`,
+            status: 'done',
+          });
+        }
         appendRunEvent({
           type: 'answer',
           title: '生成直接回答',
@@ -1457,8 +1475,11 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
                     publishUrl={automationPublishUrl}
                     feedbackMessage={automationFeedback}
                     taskStatus={automationTaskInfo?.status || null}
+                    taskStage={automationTaskInfo?.current_stage || null}
+                    taskStatusDetail={automationTaskInfo?.status_detail || null}
                     nextRun={automationTaskInfo?.next_run || null}
                     lastRun={automationTaskInfo?.last_run || null}
+                    stageHistory={automationTaskInfo?.stage_history || []}
                     isRefreshingSkills={isRefreshingSkills}
                     onConfigChange={handleAutomationConfigChange}
                     onToggleMcpServer={handleToggleMcpServer}

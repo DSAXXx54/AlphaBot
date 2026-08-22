@@ -104,7 +104,9 @@ class Settings(BaseSettings):
     LLM_RISK_MAX_TOKENS: int = int(os.getenv("LLM_RISK_MAX_TOKENS", "0"))
     LLM_RISK_TEMPERATURE: float = float(os.getenv("LLM_RISK_TEMPERATURE", "0"))
     AGENT_MAX_TOOL_LOOPS: int = int(os.getenv("AGENT_MAX_TOOL_LOOPS", "20"))
-    AUTOMATION_LLM_MAX_TOKENS: int = int(os.getenv("AUTOMATION_LLM_MAX_TOKENS", "0"))
+    AGENT_COMPOSE_MAX_TOKENS: int = int(os.getenv("AGENT_COMPOSE_MAX_TOKENS", "0"))
+    AUTOMATION_LLM_MAX_TOKENS: int = int(os.getenv("AUTOMATION_LLM_MAX_TOKENS", "2000"))
+    AUTOMATION_COMPOSE_MAX_TOKENS: int = int(os.getenv("AUTOMATION_COMPOSE_MAX_TOKENS", "6000"))
 
     # 长期记忆（向量库 Chroma）
     CHROMA_PERSIST_PATH: str = os.getenv("CHROMA_PERSIST_PATH", "./data/chroma")

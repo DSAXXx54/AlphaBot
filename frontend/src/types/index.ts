@@ -132,6 +132,14 @@ export interface TaskInfo {
   run_count: number;
   is_enabled: boolean;
   status?: string;
+  current_stage?: string | null;
+  status_detail?: string | null;
+  stage_history?: Array<{
+    stage: string;
+    detail?: string | null;
+    timestamp: string;
+    payload?: Record<string, unknown>;
+  }>;
   error?: string | null;
   result?: Record<string, unknown> | null;
   params?: Record<string, unknown>;

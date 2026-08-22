@@ -6,6 +6,7 @@ import logging
 import uuid
 import json
 import os
+import inspect
 
 from app.core.config import settings
 
@@ -43,6 +44,9 @@ class Task:
         self.last_error = None
         self.run_count = 0
         self.status = "pending"
+        self.current_stage = None
+        self.status_detail = None
+        self.stage_history: List[Dict[str, Any]] = []
 
     def to_dict(self) -> Dict[str, Any]:
         """将任务转换为可序列化的字典"""
@@ -56,6 +60,9 @@ class Task:
             "last_run": datetime.fromtimestamp(self.last_run).isoformat() if self.last_run else None,
             "run_count": self.run_count,
             "status": self.status,
+            "current_stage": self.current_stage,
+            "status_detail": self.status_detail,
+            "stage_history": self.stage_history,
             "result": self.last_result if isinstance(self.last_result, dict) else {"value": self.last_result} if self.last_result is not None else None,
             "error": self.last_error,
             "params": self.params,
@@ -73,6 +80,9 @@ class Task:
             "last_run": self.last_run,
             "run_count": self.run_count,
             "status": self.status,
+            "current_stage": self.current_stage,
+            "status_detail": self.status_detail,
+            "stage_history": self.stage_history,
             "last_result": self.last_result,
             "last_error": self.last_error,
         }
@@ -175,6 +185,9 @@ class SchedulerService:
             task.last_run = persisted.get("last_run")
             task.run_count = int(persisted.get("run_count", task.run_count) or 0)
             task.status = str(persisted.get("status", task.status) or task.status)
+            task.current_stage = persisted.get("current_stage")
+            task.status_detail = persisted.get("status_detail")
+            task.stage_history = persisted.get("stage_history") or []
             task.last_result = persisted.get("last_result")
             task.last_error = persisted.get("last_error")
 
@@ -277,6 +290,42 @@ class SchedulerService:
             logger.info(f"更新任务间隔: {task_id} - {interval}秒")
             return True
         return False
+
+    def _build_progress_callback(self, task: Task):
+        async def _progress_callback(stage: str, detail: Optional[str] = None, payload: Optional[Dict[str, Any]] = None):
+            task.current_stage = stage
+            task.status_detail = detail
+            task.status = "running"
+            task.stage_history.append({
+                "stage": stage,
+                "detail": detail,
+                "timestamp": datetime.now().isoformat(),
+                "payload": payload or {},
+            })
+            # 保留最近 20 条阶段记录，避免无限增长
+            task.stage_history = task.stage_history[-20:]
+            if payload:
+                existing = task.last_result if isinstance(task.last_result, dict) else {}
+                task.last_result = {
+                    **existing,
+                    "progress": {
+                        "stage": stage,
+                        "detail": detail,
+                        **payload,
+                    },
+                }
+            self._persist_task_state(task)
+        return _progress_callback
+
+    async def _invoke_task(self, task: Task):
+        kwargs = dict(task.kwargs or {})
+        try:
+            signature = inspect.signature(task.func)
+            if "progress_callback" in signature.parameters:
+                kwargs["progress_callback"] = self._build_progress_callback(task)
+        except Exception:
+            pass
+        return await task.func(*task.args, **kwargs)
     
     async def run_task_now(self, task_id: str) -> bool:
         """立即运行任务"""
@@ -287,17 +336,25 @@ class SchedulerService:
         
         try:
             task.status = "running"
+            task.current_stage = "queued"
+            task.status_detail = "任务已启动，等待执行。"
+            task.stage_history = []
+            self._persist_task_state(task)
             logger.info(f"手动运行任务: {task_id} - {task.description}")
-            task.last_result = await task.func(*task.args, **task.kwargs)
+            task.last_result = await self._invoke_task(task)
             task.last_run = time.time()
             task.run_count += 1
             task.last_error = None
             task.status = "success"
+            task.current_stage = "completed"
+            task.status_detail = "任务执行完成。"
             self._persist_task_state(task)
             return True
         except Exception as e:
             task.last_error = str(e)
             task.status = "failed"
+            task.current_stage = "failed"
+            task.status_detail = str(e)
             self._persist_task_state(task)
             logger.error(f"任务执行出错: {task_id} - {str(e)}")
             return False
@@ -368,19 +425,27 @@ class SchedulerService:
         task.last_run = time.time()
         task.run_count += 1
         task.status = "running"
+        task.current_stage = "queued"
+        task.status_detail = "等待后台执行。"
+        task.stage_history = []
+        self._persist_task_state(task)
         
         try:
             # 执行任务函数
-            result = await task.func(*task.args, **task.kwargs)
+            result = await self._invoke_task(task)
             task.last_result = result
             task.last_error = None
             task.status = "success"
+            task.current_stage = "completed"
+            task.status_detail = "任务执行完成。"
             self._persist_task_state(task)
             logger.info(f"任务执行成功: {task.task_id} - {task.description}")
             return result
         except Exception as e:
             task.last_error = str(e)
             task.status = "failed"
+            task.current_stage = "failed"
+            task.status_detail = str(e)
             self._persist_task_state(task)
             logger.error(f"任务执行失败: {task.task_id} - {task.description} - {str(e)}")
             return None 

@@ -42,8 +42,15 @@ interface AgentInspectorProps {
   publishUrl: string | null;
   feedbackMessage: string | null;
   taskStatus?: string | null;
+  taskStage?: string | null;
+  taskStatusDetail?: string | null;
   nextRun?: string | null;
   lastRun?: string | null;
+  stageHistory?: Array<{
+    stage: string;
+    detail?: string | null;
+    timestamp: string;
+  }>;
   isRefreshingSkills?: boolean;
   onConfigChange: (updates: Partial<AutomationConfig>) => void;
   onToggleMcpServer: (serverId: string) => void;
@@ -65,8 +72,11 @@ export function AgentInspector({
   publishUrl,
   feedbackMessage,
   taskStatus,
+  taskStage,
+  taskStatusDetail,
   nextRun,
   lastRun,
+  stageHistory = [],
   isRefreshingSkills = false,
   onConfigChange,
   onToggleMcpServer,
@@ -94,8 +104,8 @@ export function AgentInspector({
                 <div className="mt-1 text-foreground">{taskStatus || '未保存'}</div>
               </div>
               <div className="rounded-xl border border-border bg-background px-3 py-2">
-                <div className="text-[11px] text-muted-foreground">任务 ID</div>
-                <div className="mt-1 truncate text-foreground">{savedTaskId || '未创建'}</div>
+                <div className="text-[11px] text-muted-foreground">当前阶段</div>
+                <div className="mt-1 truncate text-foreground">{taskStage || '未开始'}</div>
               </div>
               <div className="rounded-xl border border-border bg-background px-3 py-2">
                 <div className="text-[11px] text-muted-foreground">下次运行</div>
@@ -106,6 +116,31 @@ export function AgentInspector({
                 <div className="mt-1 text-foreground">{lastRun || '暂无'}</div>
               </div>
             </div>
+            {taskStatusDetail && (
+              <div className="mt-2 rounded-xl border border-border bg-background px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+                {taskStatusDetail}
+              </div>
+            )}
+            {savedTaskId && (
+              <div className="mt-2 rounded-xl border border-border bg-background px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+                任务 ID：{savedTaskId}
+              </div>
+            )}
+            {stageHistory.length > 0 && (
+              <div className="mt-2 space-y-2">
+                {stageHistory.slice(-4).reverse().map((item) => (
+                  <div key={`${item.stage}-${item.timestamp}`} className="rounded-xl border border-border bg-background px-3 py-2">
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="font-medium text-foreground">{item.stage}</span>
+                      <span className="text-muted-foreground">{new Date(item.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    {item.detail && (
+                      <div className="mt-1 text-[11px] leading-5 text-muted-foreground">{item.detail}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
 
           <section className="rounded-[18px] border border-border/80 bg-card/95 p-3">

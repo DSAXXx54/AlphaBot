@@ -1,6 +1,7 @@
 export type AgentEventType =
   | 'goal'
   | 'thinking'
+  | 'phase'
   | 'tool_call'
   | 'tool_result'
   | 'answer'

@@ -249,7 +249,7 @@ async def stream_agent_response(
             user_id=user.id,
             extra_system_lines=extra_system_lines or None,
         )
-        tools_for_llm = AgentService.get_available_tools(role=role)
+        tools_for_llm = AgentService.get_available_tools(role=role, metadata=metadata)
         
         # 可选：在最后一条用户消息中注入联网搜索提示
         if enable_web_search:
@@ -262,6 +262,13 @@ async def stream_agent_response(
         yield json.dumps({
             "type": "thinking",
             "content": "正在分析数据...",
+            "timestamp": int(time.time() * 1000)
+        }) + "\n"
+        yield json.dumps({
+            "type": "phase",
+            "phase": "gathering",
+            "title": "资料采集",
+            "detail": "正在判断是否需要工具，并执行资料采集。",
             "timestamp": int(time.time() * 1000)
         }) + "\n"
         
@@ -281,6 +288,13 @@ async def stream_agent_response(
             
             # 如果没有工具调用，则认为是最终回复
             if not tool_calls:
+                yield json.dumps({
+                    "type": "phase",
+                    "phase": "composing",
+                    "title": "最终成稿",
+                    "detail": "资料已齐备，正在生成最终回答。",
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n"
                 # 直接消费 LLM 流，周期性输出 delta
                 aggregated = ""
                 async for delta in llm_client.chat_completion_stream(
@@ -320,6 +334,7 @@ async def stream_agent_response(
                 yield json.dumps({
                     "type": "end",
                     "session_id": session_id,
+                    "completion_reason": "stop",
                     "timestamp": int(time.time() * 1000)
                 }) + "\n"
                 break
@@ -349,6 +364,7 @@ async def stream_agent_response(
                 yield json.dumps({
                     "type": "tool_start",
                     "tool_name": function_name,
+                    "phase": "gathering",
                     "timestamp": int(time.time() * 1000)
                 }) + "\n"
                 

@@ -55,6 +55,18 @@ class AgentRoleConfig:
     system_hint: str          # 追加到 system prompt 的角色提示文案
 
 
+@dataclass
+class AgentExecutionState:
+    session_id: str
+    role: AgentRole
+    profile: LLMProfileName
+    messages: List[Dict[str, Any]]
+    tool_outputs: List[str]
+    loop_count: int
+    completion_reason: str
+    final_draft: str = ""
+
+
 class AgentService:
     """AlphaBot智能体服务"""
     
@@ -292,6 +304,192 @@ class AgentService:
         return max_tokens if max_tokens > 0 else None
 
     @classmethod
+    def _compose_max_tokens(cls, metadata: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        automation = (metadata or {}).get("automation")
+        if isinstance(automation, dict):
+            max_tokens = int(getattr(settings, "AUTOMATION_COMPOSE_MAX_TOKENS", 0))
+            return max_tokens if max_tokens > 0 else None
+
+        max_tokens = int(getattr(settings, "AGENT_COMPOSE_MAX_TOKENS", 0))
+        return max_tokens if max_tokens > 0 else None
+
+    @classmethod
+    def _use_staged_response(cls, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        automation = (metadata or {}).get("automation")
+        if isinstance(automation, dict):
+            return True
+        return bool((metadata or {}).get("staged_response"))
+
+    @classmethod
+    async def _run_tool_loop(
+        cls,
+        *,
+        user_message: str,
+        session_id: str,
+        db: Session,
+        user: User,
+        role: AgentRole,
+        role_cfg: AgentRoleConfig,
+        enable_web_search: bool = False,
+        model: Optional[str] = None,
+        notify_channel: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        extra_system_lines: Optional[List[str]] = None,
+    ) -> AgentExecutionState:
+        messages = cls._build_messages(
+            user_message,
+            session_id,
+            db,
+            user_id=user.id,
+            extra_system_lines=extra_system_lines or None,
+        )
+
+        if enable_web_search:
+            messages.insert(-1 if messages else 0, {
+                "role": "system",
+                "content": "如需最新外部信息，优先调用 search_web 工具获取必要事实后再作答。"
+            })
+
+        tools_for_llm = cls.get_available_tools(role=role, metadata=metadata)
+        formatted_results: List[str] = []
+        max_tool_loops = getattr(settings, "AGENT_MAX_TOOL_LOOPS", 20)
+        loop_count = 0
+
+        while True:
+            if loop_count >= max_tool_loops:
+                return AgentExecutionState(
+                    session_id=session_id,
+                    role=role,
+                    profile=role_cfg.profile,
+                    messages=messages,
+                    tool_outputs=formatted_results,
+                    loop_count=loop_count,
+                    completion_reason="max_tool_loops",
+                )
+
+            loop_count += 1
+
+            llm_client = LLMRegistry.get_client(
+                profile=role_cfg.profile,
+                max_tokens_override=cls._automation_max_tokens(metadata),
+            )
+            llm_response = await llm_client.chat_completion(
+                messages=messages,
+                model=model,
+                tools=tools_for_llm,
+                tool_choice="auto"
+            )
+
+            choices = llm_response.get("choices", [{}])
+            choice = choices[0] if choices else {}
+            assistant_message = choice.get("message", {})
+            tool_calls = assistant_message.get("tool_calls") or []
+            finish_reason = choice.get("finish_reason") or "unknown"
+
+            if not tool_calls:
+                content = assistant_message.get("content", "无法生成回复")
+                messages.append({
+                    "role": "assistant",
+                    "content": content,
+                })
+                return AgentExecutionState(
+                    session_id=session_id,
+                    role=role,
+                    profile=role_cfg.profile,
+                    messages=messages,
+                    tool_outputs=formatted_results,
+                    loop_count=loop_count,
+                    completion_reason=str(finish_reason),
+                    final_draft=content,
+                )
+
+            messages.append(assistant_message)
+
+            for tool_call in tool_calls:
+                function = tool_call.get("function", {})
+                function_name = function.get("name")
+
+                try:
+                    arguments = json.loads(function.get("arguments", "{}"))
+                except Exception as e:
+                    logger.error(f"解析工具参数出错: {str(e)}")
+                    arguments = {}
+
+                if notify_channel:
+                    if function_name == "set_price_alert":
+                        arguments.setdefault("notify_channel", notify_channel)
+                    elif function_name == "send_channel_message":
+                        arguments.setdefault("channel", notify_channel.get("type"))
+                        arguments.setdefault("chat_id", notify_channel.get("chat_id"))
+
+                arguments = cls._apply_tool_runtime_context(function_name, arguments, metadata)
+
+                logger.info(f"执行工具: {function_name}, 参数: {arguments}")
+                tool_result = await cls.execute_tool(
+                    function_name,
+                    arguments,
+                    db,
+                    user,
+                    metadata=metadata,
+                )
+
+                formatted_result = await cls._format_tool_result_for_display(function_name, tool_result)
+                if formatted_result:
+                    formatted_results.append(formatted_result)
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.get("id"),
+                    "name": function_name,
+                    "content": json.dumps(tool_result, ensure_ascii=False, default=str),
+                })
+
+    @classmethod
+    async def _compose_staged_response(
+        cls,
+        *,
+        state: AgentExecutionState,
+        db: Session,
+        user: User,
+        model: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        compose_messages = list(state.messages)
+        compose_messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "你现在进入最终成稿阶段。不要继续调用工具，也不要描述你还要继续搜索或整理。"
+                    "请直接基于当前上下文中已经获取到的事实与工具结果，输出一份完整、可直接交付的最终答案。"
+                    "如果是自动化报告，请输出完整成稿，不要写过程性说明。"
+                ),
+            }
+        )
+        compose_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "请基于当前上下文给出最终完整答案。"
+                    "要求：结构清晰、信息完整，不要输出“我将继续”“接下来”“正在整理”等中间态表述。"
+                ),
+            }
+        )
+
+        llm_client = LLMRegistry.get_client(
+            profile=state.profile,
+            max_tokens_override=cls._compose_max_tokens(metadata),
+        )
+        llm_response = await llm_client.chat_completion(
+            messages=compose_messages,
+            model=model,
+        )
+        choices = llm_response.get("choices", [{}])
+        choice = choices[0] if choices else {}
+        assistant_message = choice.get("message", {})
+        content = assistant_message.get("content", "") or state.final_draft
+        return content or "无法生成回复"
+
+    @classmethod
     def get_available_tools(
         cls,
         role: Optional[AgentRole] = None,
@@ -519,125 +717,49 @@ class AgentService:
                 metadata=metadata,
             )
             role_cfg = cls.ROLE_CONFIGS.get(role) or cls.ROLE_CONFIGS[AgentRole.GENERAL]
-
-            messages = cls._build_messages(
-                user_message,
-                session_id,
-                db,
-                user_id=user.id,
-                extra_system_lines=extra_system_lines or None,
+            state = await cls._run_tool_loop(
+                user_message=user_message,
+                session_id=session_id,
+                db=db,
+                user=user,
+                role=role,
+                role_cfg=role_cfg,
+                enable_web_search=enable_web_search,
+                model=model,
+                notify_channel=notify_channel,
+                metadata=metadata,
+                extra_system_lines=extra_system_lines,
             )
 
-            # 2. 可选：在最后一条用户消息中注入联网搜索提示
-            if enable_web_search:
-                messages.insert(-1 if messages else 0, {
-                    "role": "system",
-                    "content": "如需最新外部信息，优先调用 search_web 工具获取必要事实后再作答。"
-                })
+            content = state.final_draft or "无法生成回复"
+            staged_response_used = False
 
-            # 2.1 为当前角色选择允许使用的工具集合
-            tools_for_llm = cls.get_available_tools(role=role, metadata=metadata)
-
-            # 3. 迭代式工具调用与回复生成循环
-            formatted_results: List[str] = []
-            max_tool_loops = getattr(settings, "AGENT_MAX_TOOL_LOOPS", 20)
-            loop_count = 0
-            while True:
-                if loop_count >= max_tool_loops:
-                    content = "本次对话涉及的工具调用已达到上限，我将基于目前掌握的信息给出总结。如需继续深入，可以换个提问角度再聊。"
-
-                    cls._save_conversation(
-                        session_id,
-                        user.id,
-                        messages,
-                        content,
-                        db,
-                    )
-
-                    return {
-                        "content": content,
-                        "session_id": session_id,
-                        "tool_outputs": formatted_results if formatted_results else None,
-                    }
-
-                loop_count += 1
-
-                llm_client = LLMRegistry.get_client(
-                    profile=role_cfg.profile,
-                    max_tokens_override=cls._automation_max_tokens(metadata),
-                )
-                llm_response = await llm_client.chat_completion(
-                    messages=messages,
+            if cls._use_staged_response(metadata):
+                content = await cls._compose_staged_response(
+                    state=state,
+                    db=db,
+                    user=user,
                     model=model,
-                    tools=tools_for_llm,
-                    tool_choice="auto"
+                    metadata=metadata,
                 )
+                staged_response_used = True
 
-                assistant_message = llm_response.get("choices", [{}])[0].get("message", {})
-                tool_calls = assistant_message.get("tool_calls") or []
-                # 如果没有工具调用，则认为是最终回复
-                if not tool_calls:
-                    content = assistant_message.get("content", "无法生成回复")
+            cls._save_conversation(
+                session_id,
+                user.id,
+                state.messages,
+                content,
+                db,
+            )
 
-                    cls._save_conversation(
-                        session_id,
-                        user.id,
-                        messages,
-                        content,
-                        db,
-                    )
-
-                    return {
-                        "content": content,
-                        "session_id": session_id,
-                        "tool_outputs": formatted_results if formatted_results else None,
-                    }
-
-                # 有工具调用：先把包含 tool_calls 的 assistant 消息加入历史
-                messages.append(assistant_message)
-
-                # 依次执行工具并把结果追加为tool消息
-                for tool_call in tool_calls:
-                    function = tool_call.get("function", {})
-                    function_name = function.get("name")
-
-                    try:
-                        arguments = json.loads(function.get("arguments", "{}"))
-                    except Exception as e:
-                        logger.error(f"解析工具参数出错: {str(e)}")
-                        arguments = {}
-
-                    # 将渠道通知信息注入到设置预警 / 发送消息的参数中，便于后续主动通知
-                    if notify_channel:
-                        if function_name == "set_price_alert":
-                            arguments.setdefault("notify_channel", notify_channel)
-                        elif function_name == "send_channel_message":
-                            arguments.setdefault("channel", notify_channel.get("type"))
-                            arguments.setdefault("chat_id", notify_channel.get("chat_id"))
-
-                    arguments = cls._apply_tool_runtime_context(function_name, arguments, metadata)
-
-                    logger.info(f"执行工具: {function_name}, 参数: {arguments}")
-                    tool_result = await cls.execute_tool(
-                        function_name,
-                        arguments,
-                        db,
-                        user,
-                        metadata=metadata,
-                    )
-
-                    # 供前端展示的格式化输出
-                    formatted_result = await cls._format_tool_result_for_display(function_name, tool_result)
-                    if formatted_result:
-                        formatted_results.append(formatted_result)
-
-                    # 把工具原始结果以tool消息形式追加，供LLM继续推理
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.get("id"),
-                        "name": function_name,
-                        "content": json.dumps(tool_result, ensure_ascii=False, default=str),
-                    })
+            return {
+                "content": content,
+                "session_id": session_id,
+                "tool_outputs": state.tool_outputs if state.tool_outputs else None,
+                "completion_reason": state.completion_reason,
+                "tool_loop_count": state.loop_count,
+                "staged_response_used": staged_response_used,
+            }
         except Exception as e:
             logger.error(f"处理消息出错: {str(e)}")
             return {
@@ -818,5 +940,9 @@ class AgentService:
             user_id=message.user_id,
             content=result.get("content", ""),
             tool_outputs=result.get("tool_outputs"),
-            metadata={},
+            metadata={
+                "completion_reason": result.get("completion_reason"),
+                "tool_loop_count": result.get("tool_loop_count"),
+                "staged_response_used": result.get("staged_response_used", False),
+            },
         )

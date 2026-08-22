@@ -5,7 +5,7 @@ import os
 import re
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Awaitable
 
 from sqlalchemy.orm import Session
 
@@ -183,9 +183,40 @@ class AutomationService:
         return _slugify(f"{slug}-{now.strftime('%H%M%S')}")
 
     @classmethod
-    async def execute_skill_publish_job(cls, *, task_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_skill_publish_job(
+        cls,
+        *,
+        task_id: str,
+        params: Dict[str, Any],
+        progress_callback: Optional[Callable[[str, Optional[str], Optional[Dict[str, Any]]], Awaitable[None] | None]] = None,
+    ) -> Dict[str, Any]:
+        return await cls._execute_skill_publish_job(task_id=task_id, params=params, progress_callback=progress_callback)
+
+    @classmethod
+    async def _emit_progress(
+        cls,
+        progress_callback: Optional[Callable[[str, Optional[str], Optional[Dict[str, Any]]], Awaitable[None] | None]],
+        stage: str,
+        detail: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not progress_callback:
+            return
+        result = progress_callback(stage, detail, payload)
+        if result is not None and hasattr(result, "__await__"):
+            await result
+
+    @classmethod
+    async def _execute_skill_publish_job(
+        cls,
+        *,
+        task_id: str,
+        params: Dict[str, Any],
+        progress_callback: Optional[Callable[[str, Optional[str], Optional[Dict[str, Any]]], Awaitable[None] | None]] = None,
+    ) -> Dict[str, Any]:
         db: Session = SessionLocal()
         try:
+            await cls._emit_progress(progress_callback, "initializing", "正在准备自动化任务配置。", {"task_id": task_id})
             user_id = params.get("user_id")
             if not user_id:
                 raise ValueError("缺少 user_id，无法执行自动化任务")
@@ -200,6 +231,7 @@ class AutomationService:
                 raise ValueError("缺少 prompt_template，无法执行自动化任务")
 
             now = datetime.now()
+            await cls._emit_progress(progress_callback, "planning", "正在渲染任务参数与发布路径。")
             collection_slug = cls.build_collection_slug(params.get("publish_collection_slug"))
             entry_slug = cls.ensure_unique_entry_slug(
                 collection_slug,
@@ -237,6 +269,7 @@ class AutomationService:
                 content=user_prompt,
                 metadata={
                     "forced_role": skill_name,
+                    "staged_response": True,
                     "account_context": account_context,
                     "automation": {
                         "task_id": task_id,
@@ -246,6 +279,7 @@ class AutomationService:
                 },
             )
 
+            await cls._emit_progress(progress_callback, "gathering", "正在调用 agent 执行工具采集与分析。", {"session_id": automation_session_id})
             reply = await AgentService.process_channel_message(
                 message=message,
                 db=db,
@@ -254,12 +288,25 @@ class AutomationService:
                 model=params.get("model"),
             )
 
+            agent_metadata = reply.metadata or {}
+            if agent_metadata.get("staged_response_used"):
+                await cls._emit_progress(
+                    progress_callback,
+                    "composing",
+                    "已完成资料采集，正在生成最终成稿。",
+                    {
+                        "completion_reason": agent_metadata.get("completion_reason"),
+                        "tool_loop_count": agent_metadata.get("tool_loop_count"),
+                    },
+                )
+
             publish_title = cls.build_publish_title(
                 publish_title_template,
                 now,
                 reply.content,
             )
 
+            await cls._emit_progress(progress_callback, "publishing", "正在写入已发布内容。", {"entry_slug": entry_slug})
             published = cls.write_published_report(
                 slug=publish_slug,
                 title=publish_title,
@@ -269,6 +316,7 @@ class AutomationService:
                     "skill_name": skill_name,
                     "mcp_servers": mcp_servers,
                     "tool_outputs": reply.tool_outputs or [],
+                    "agent_metadata": agent_metadata,
                     "user_id": user.id,
                     "collection_slug": collection_slug,
                     "entry_slug": entry_slug,
@@ -276,6 +324,13 @@ class AutomationService:
                     "publish_collection_slug": params.get("publish_collection_slug"),
                     "publish_slug_template": params.get("publish_slug"),
                 },
+            )
+
+            await cls._emit_progress(
+                progress_callback,
+                "completed",
+                "自动化任务已完成并发布。",
+                {"published_url": cls.build_public_report_url(collection_slug, entry_slug)},
             )
 
             return {
@@ -291,7 +346,11 @@ class AutomationService:
                 "title": published["title"],
                 "content_preview": reply.content[:500],
                 "tool_outputs": reply.tool_outputs or [],
+                "agent_metadata": agent_metadata,
                 "published_at": published["published_at"],
             }
+        except Exception as exc:
+            await cls._emit_progress(progress_callback, "failed", str(exc))
+            raise
         finally:
             db.close()
