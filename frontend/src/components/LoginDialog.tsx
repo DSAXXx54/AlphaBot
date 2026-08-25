@@ -18,9 +18,11 @@ import { Label } from '@/components/ui/label';
 interface LoginDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  redirectTo?: string;
+  registered?: boolean;
 }
 
-export default function LoginDialog({ isOpen, onClose }: LoginDialogProps) {
+export default function LoginDialog({ isOpen, onClose, redirectTo = '/', registered = false }: LoginDialogProps) {
   const router = useRouter();
   const { login } = useAuth();
   const [error, setError] = useState('');
@@ -38,8 +40,7 @@ export default function LoginDialog({ isOpen, onClose }: LoginDialogProps) {
     try {
       const response = await authService.login({ username, password });
       await login(response.access_token);
-      onClose();
-      router.push('/');
+      router.replace(redirectTo);
     } catch (error: any) {
       setError(error.response?.data?.error || '登录失败，请重试');
     } finally {
@@ -53,7 +54,9 @@ export default function LoginDialog({ isOpen, onClose }: LoginDialogProps) {
         <DialogHeader>
           <DialogTitle>登录您的账户</DialogTitle>
           <DialogDescription>
-            本应用仅用于交流学习，由于算力资源有限，请右上角联系免费获取体验账户
+            {registered
+              ? '注册成功，请使用新账户登录。'
+              : '本应用仅用于交流学习，由于算力资源有限，请右上角联系免费获取体验账户'}
           </DialogDescription>
         </DialogHeader>
 

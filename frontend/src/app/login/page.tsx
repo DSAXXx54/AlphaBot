@@ -3,19 +3,21 @@
 import { useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { resolveLoginRedirect } from '@/lib/authRedirect';
 import LoginDialog from '@/components/LoginDialog';
 
 function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isReady } = useAuth();
   const registered = searchParams.get('registered') === 'true';
+  const redirectTo = resolveLoginRedirect(searchParams.get('next'), searchParams.get('view'));
 
   useEffect(() => {
-    if (isAuthenticated) {
-      router.push('/');
+    if (isReady && isAuthenticated) {
+      router.replace(redirectTo);
     }
-  }, [isAuthenticated, router]);
+  }, [isAuthenticated, isReady, redirectTo, router]);
 
   const handleClose = () => {
     router.push('/');
@@ -24,6 +26,8 @@ function LoginContent() {
   return (
     <LoginDialog
       isOpen={true}
+      registered={registered}
+      redirectTo={redirectTo}
       onClose={handleClose}
     />
   );
@@ -35,4 +39,4 @@ export default function LoginPage() {
       <LoginContent />
     </Suspense>
   );
-} 
+}

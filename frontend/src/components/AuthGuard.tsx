@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { loginUrl } from '@/lib/authRedirect';
 
 const publicPaths = ['/', '/login', '/register', '/about'];
 const publicPathPrefixes = ['/published/'];
@@ -11,35 +12,31 @@ const isPublicPath = (pathname: string) =>
   publicPaths.includes(pathname) || publicPathPrefixes.some((prefix) => pathname.startsWith(prefix));
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isReady } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const publicPath = isPublicPath(pathname);
 
   useEffect(() => {
-    // 如果是首页且已登录，重定向到仪表板
-    if (pathname === '/' && isAuthenticated) {
-      router.push('/');
+    if (!isReady) return;
+
+    if (isAuthenticated && pathname === '/register') {
+      router.replace('/');
       return;
     }
-    
-    // 如果不是公开路径且未登录，重定向到登录页
-    if (!isAuthenticated && !isPublicPath(pathname)) {
-      router.push('/login');
-    } else if (isAuthenticated && ['/login', '/register'].includes(pathname)) {
-      router.push('/');
-    }
-  }, [isAuthenticated, pathname, router]);
 
-  // 如果在公共路径上，直接显示内容
-  if (isPublicPath(pathname)) {
+    if (!isAuthenticated && !publicPath) {
+      router.replace(loginUrl(pathname));
+    }
+  }, [isAuthenticated, isReady, pathname, publicPath, router]);
+
+  if (publicPath) {
     return <>{children}</>;
   }
 
-  // 如果需要认证但未认证，返回 null（将被重定向）
-  if (!isAuthenticated) {
+  if (!isReady || !isAuthenticated) {
     return null;
   }
 
-  // 已认证，显示内容
   return <>{children}</>;
-} 
+}

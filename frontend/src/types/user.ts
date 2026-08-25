@@ -44,6 +44,7 @@ export interface SavedStock {
 
 export interface AuthState {
   isAuthenticated: boolean;
+  isReady: boolean;
   user: User | null;
   token: string | null;
 }
