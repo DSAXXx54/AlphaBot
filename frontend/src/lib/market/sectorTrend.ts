@@ -110,11 +110,22 @@ function toTopic(
   };
 }
 
-function buildStockTags(ztList: TopicStock[]): Record<string, MarketTrendStockTag> {
+function buildStockTags(ztList: TopicStock[], surge: SurgeLimitStock[]): Record<string, MarketTrendStockTag> {
+  const surgeByCode = new Map(surge.map((item) => [normalizeCode(item.code), item]));
   return Object.fromEntries(
     ztList.map((stock) => {
       const lbc = Math.max(1, stock.lbc || 1);
-      return [normalizeCode(stock.code), { lbc, status: lbc <= 1 ? '首板' : `${lbc}板` }];
+      const code = normalizeCode(stock.code);
+      const surgeItem = surgeByCode.get(code);
+      return [
+        code,
+        {
+          lbc,
+          status: lbc <= 1 ? '首板' : `${lbc}板`,
+          analysis: surgeItem?.analysis || undefined,
+          plate: stock.reason?.trim() || undefined,
+        },
+      ];
     })
   );
 }
@@ -142,6 +153,6 @@ export function buildSectorTrendData(
     range: 20,
     latestDay: date,
     topics: [...inflowTopics, ...outflowTopics].sort((a, b) => b.score - a.score || b.moneyFlow - a.moneyFlow),
-    stockTags: buildStockTags(ztList),
+    stockTags: buildStockTags(ztList, surge),
   };
 }

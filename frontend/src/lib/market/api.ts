@@ -38,6 +38,7 @@ export type SurgeLimitStock = {
   code: string;
   name: string;
   plates: string[];
+  analysis?: string;
 };
 
 type ClistItem = {
@@ -377,6 +378,7 @@ export async function loadSurgeLimitUp(): Promise<SurgeLimitStock[]> {
           code: normalizeCode(symbol),
           name: String(item[1] || ''),
           plates,
+          analysis: String(item[5] || '').trim() || undefined,
         };
       })
       .filter((item) => item.code && item.code !== '000000');

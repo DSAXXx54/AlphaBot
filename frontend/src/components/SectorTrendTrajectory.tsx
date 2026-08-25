@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { loadPlateDayKline, loadPlateMembers, type PlateDayBar, type PlateMember } from '@/lib/market/api';
 import type { MarketTrendPanelData, MarketTrendStage, MarketTrendTopic } from '@/lib/market/types';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
 type SectorTrendTrajectoryProps = {
@@ -22,6 +23,8 @@ type TrendMember = {
   netFlow: number;
   turnoverRate: number;
   status?: string;
+  limitAnalysis?: string;
+  limitPlate?: string;
 };
 
 type TopicHistoryPoint = {
@@ -271,6 +274,8 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
             netFlow: item.netFlow,
             turnoverRate: item.turnoverRate,
             status: data.stockTags[item.code]?.status,
+            limitAnalysis: data.stockTags[item.code]?.analysis,
+            limitPlate: data.stockTags[item.code]?.plate,
           })),
         }));
       })
@@ -657,16 +662,48 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
                     <tr
                       key={`${selectedTopic.id}-${member.code}`}
                       className="border-t border-border/50 text-sm hover:bg-muted/20"
-                      onClick={() => onSelectStock?.(member.code, member.name)}
                     >
                       <td className="px-5 py-3 text-foreground">{member.rank}</td>
                       <td className="px-5 py-3 text-muted-foreground">{member.code}</td>
                       <td className="px-5 py-3 font-medium text-foreground">
-                        <span>{member.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => onSelectStock?.(member.code, member.name)}
+                          className="cursor-pointer text-left text-foreground hover:text-orange-600"
+                        >
+                          {member.name}
+                        </button>
                         {member.status ? (
-                          <span className="ml-2 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] text-orange-700 dark:bg-orange-950/30 dark:text-orange-300">
-                            {member.status}
-                          </span>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="ml-2 inline-flex rounded-full bg-orange-100 px-2 py-0.5 text-[10px] text-orange-700 dark:bg-orange-950/30 dark:text-orange-300">
+                                  {member.status}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent
+                                side="top"
+                                align="start"
+                                sideOffset={8}
+                                className="max-w-[280px] rounded-2xl border border-orange-200/55 bg-white/88 px-3 py-2.5 text-[12px] leading-5 text-slate-700 shadow-[0_14px_28px_rgba(15,23,42,0.10)] backdrop-blur-sm dark:border-orange-900/40 dark:bg-slate-950/84 dark:text-slate-200"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="inline-flex rounded-full bg-orange-100/80 px-2 py-0.5 text-[10px] font-semibold text-orange-700 dark:bg-orange-950/30 dark:text-orange-200">
+                                    {member.status}
+                                  </span>
+                                  {member.limitPlate ? (
+                                    <span className="text-[11px] text-slate-500/90 dark:text-slate-400">{member.limitPlate}</span>
+                                  ) : null}
+                                </div>
+                                <div className="mt-2 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400/90 dark:text-slate-500">
+                                  涨停分析
+                                </div>
+                                <div className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-slate-700/95 dark:text-slate-200">
+                                  {member.limitAnalysis || member.limitPlate || '暂无涨停分析'}
+                                </div>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                         ) : null}
                       </td>
                       <td className={cn('px-5 py-3 font-medium', member.changePercent >= 0 ? 'text-rose-600' : 'text-emerald-600')}>

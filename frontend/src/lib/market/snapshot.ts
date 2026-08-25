@@ -128,7 +128,21 @@ function toMainlineStock(stock: TopicStock): MarketMainlineStock {
   return { name: stock.name, code: stock.code, lbc: boardHeight(stock) };
 }
 
-function buildMainlineLanes(plates: Awaited<ReturnType<typeof loadPlates>>, ztPool: TopicStock[]): MarketMainlineLane[] {
+function buildTopicFundMap(...groups: TopicStock[][]): Map<string, number> {
+  const funds = new Map<string, number>();
+  groups.flat().forEach((stock) => {
+    const name = stock.reason?.trim();
+    if (!name || name === '其他') return;
+    funds.set(name, (funds.get(name) || 0) + (stock.fund || 0) / 1e8);
+  });
+  return funds;
+}
+
+function buildMainlineLanes(
+  plates: Awaited<ReturnType<typeof loadPlates>>,
+  ztPool: TopicStock[],
+  topicFunds: Map<string, number>
+): MarketMainlineLane[] {
   const grouped = new Map<string, TopicStock[]>();
   ztPool.forEach((stock) => {
     const name = stock.reason?.trim();
@@ -147,26 +161,28 @@ function buildMainlineLanes(plates: Awaited<ReturnType<typeof loadPlates>>, ztPo
       });
       const sorted = [...unique.values()].sort((a, b) => b.lbc - a.lbc || a.time - b.time);
       const plate = matchPlate(plates, name);
+      const fallbackNetFlow = topicFunds.get(name) || 0;
       const ztCount = sorted.length;
       const maxHeight = sorted[0] ? boardHeight(sorted[0]) : 0;
       const heightSum = sorted.reduce((sum, stock) => sum + boardHeight(stock), 0);
-      const netFlow = plate?.netFlow || 0;
+      const netFlow = plate?.netFlow || fallbackNetFlow;
       return {
         name,
         plate,
         sorted,
+        netFlow,
         ztCount,
         maxHeight,
         score: ztCount * 12 + maxHeight * 18 + heightSum * 4 + netFlow * 0.8,
       };
     })
-    .sort((a, b) => b.score - a.score || b.ztCount - a.ztCount || (b.plate?.netFlow || 0) - (a.plate?.netFlow || 0))
+    .sort((a, b) => b.score - a.score || b.ztCount - a.ztCount || b.netFlow - a.netFlow)
     .slice(0, MAINLINE_LIMIT)
     .map((item) => ({
       name: item.name,
-      value: item.plate ? formatPlateFlow(item.plate.netFlow) : '--',
+      value: item.netFlow !== 0 ? formatPlateFlow(item.netFlow) : '--',
       change: item.plate?.change || 0,
-      netFlow: item.plate?.netFlow || 0,
+      netFlow: item.netFlow,
       ztCount: item.ztCount,
       maxHeight: item.maxHeight,
       upCount: item.plate?.upCount || 0,
@@ -228,6 +244,8 @@ async function buildSnapshot(): Promise<MarketSnapshot> {
   });
   const plateFlows = settledValue(plateFlowResult, { inflow: [], outflow: [] });
   const latestZt = pools.ztByDate.get(latestDay) || [];
+  const latestZb = pools.zbByDate.get(latestDay) || [];
+  const latestDt = pools.dtByDate.get(latestDay) || [];
   const plates = [...plateFlows.inflow, ...plateFlows.outflow];
 
   snapshot.emotionSeries = tradingDays
@@ -248,7 +266,7 @@ async function buildSnapshot(): Promise<MarketSnapshot> {
     ];
   }
 
-  const lanes = buildMainlineLanes(plates, latestZt);
+  const lanes = buildMainlineLanes(plates, latestZt, buildTopicFundMap(latestZt, latestZb, latestDt));
   snapshot.mainlineLanes = lanes;
   if (lanes.length > 0) {
     const top = lanes[0];

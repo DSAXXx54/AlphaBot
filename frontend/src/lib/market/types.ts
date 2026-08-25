@@ -119,6 +119,8 @@ export type MarketTrendTopic = {
 export type MarketTrendStockTag = {
   lbc: number;
   status: string;
+  analysis?: string;
+  plate?: string;
 };
 
 export type MarketTrendPanelData = {
