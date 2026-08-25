@@ -1,4 +1,5 @@
 import { loadBigFace, loadHot, loadPlateFlows, loadPlates, loadStrong, loadSurgeLimitUp, loadTopicPools, loadTradingDays, loadTurnover, type TopicStock } from './api';
+import { clearMarketCache } from './client';
 import { formatPlateFlow, formatShortDate, matchPlate, normalizeCode } from './format';
 import { buildSectorTrendData } from './sectorTrend';
 import {
@@ -177,7 +178,11 @@ function buildMainlineLanes(plates: Awaited<ReturnType<typeof loadPlates>>, ztPo
 
 let inflight: Promise<MarketSnapshot> | null = null;
 
-export function loadMarketSnapshot(): Promise<MarketSnapshot> {
+export async function loadMarketSnapshot(force = false): Promise<MarketSnapshot> {
+  if (force) {
+    await clearMarketCache();
+    return buildSnapshot();
+  }
   if (inflight) return inflight;
   inflight = buildSnapshot().finally(() => {
     inflight = null;

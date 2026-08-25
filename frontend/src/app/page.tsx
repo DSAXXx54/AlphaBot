@@ -138,6 +138,7 @@ export default function Home() {
   const [cardRefreshing, setCardRefreshing] = useState<Record<MarketCardLabel, boolean>>(() => ({ ...EMPTY_CARD_REFRESH }));
   const [autoRefresh, setAutoRefresh] = useState<Record<MarketCardLabel, boolean>>(() => ({ ...EMPTY_CARD_REFRESH }));
   const [activeMarketCard, setActiveMarketCard] = useState<MarketCardLabel | null>(null);
+  const [trendRefreshToken, setTrendRefreshToken] = useState(0);
   const [selectedEmotionDate, setSelectedEmotionDate] = useState<string | null>(null);
   const [emotionOverviewMode, setEmotionOverviewMode] = useState<'intraday' | 'short'>('short');
   const [shortEmotionCycle, setShortEmotionCycle] = useState<1 | 3 | 5 | 10 | 20>(5);
@@ -187,8 +188,11 @@ export default function Home() {
       return next;
     });
     try {
-      const snapshot = await loadMarketSnapshot();
+      const snapshot = await loadMarketSnapshot(true);
       setMarketSnapshot(snapshot);
+      if (labels.includes('趋势')) {
+        setTrendRefreshToken((current) => current + 1);
+      }
     } catch (error: unknown) {
       console.error('加载市场总览失败:', error);
     } finally {
@@ -667,7 +671,11 @@ export default function Home() {
                   {activeMarketCard === '趋势' ? (
                     <div className="space-y-4">
                       <TurnoverMinuteChart data={marketSnapshot.turnover} />
-                      <SectorTrendTrajectory data={marketSnapshot.sectorTrend} onSelectStock={handleSelectMarketStock} />
+                      <SectorTrendTrajectory
+                        data={marketSnapshot.sectorTrend}
+                        onSelectStock={handleSelectMarketStock}
+                        refreshToken={trendRefreshToken}
+                      />
                     </div>
                   ) : activeMarketCard === '情绪' ? (
                     <div className="space-y-4">

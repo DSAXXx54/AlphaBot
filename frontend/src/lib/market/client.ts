@@ -1,3 +1,5 @@
+import { indexedDBCache } from '@/lib/indexedDBCache';
+
 const inflight = new Map<string, Promise<unknown>>();
 const memory = new Map<string, { at: number; ttl: number; data: unknown }>();
 
@@ -14,46 +16,65 @@ export function cacheKey(url: string): string {
     .replace(/\?&/, '?');
 }
 
-function readSession<T>(key: string): T | null {
+function persistKey(key: string) {
+  return `market:${key}`;
+}
+
+async function readPersisted<T>(key: string): Promise<T | null> {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = window.sessionStorage.getItem(`ab-market:${key}`);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { at: number; ttl: number; data: T };
-    if (!parsed || Date.now() - parsed.at > parsed.ttl) return null;
-    return parsed.data;
+    return await indexedDBCache.get<T>(persistKey(key));
   } catch {
     return null;
   }
 }
 
-function writeSession(key: string, ttl: number, data: unknown) {
+async function writePersisted(key: string, ttl: number, data: unknown) {
   if (typeof window === 'undefined') return;
   try {
-    window.sessionStorage.setItem(`ab-market:${key}`, JSON.stringify({ at: Date.now(), ttl, data }));
+    await indexedDBCache.set(persistKey(key), data, ttl);
   } catch {
-    // quota or private mode
+    // ignore persistence failures
   }
 }
 
-export function cached<T>(key: string, ttl: number, persist: boolean, loader: () => Promise<T>): Promise<T> {
+async function deletePersisted(key: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    await indexedDBCache.delete(persistKey(key));
+  } catch {
+    // ignore delete failures
+  }
+}
+
+export async function cached<T>(
+  key: string,
+  ttl: number,
+  _persist: boolean,
+  loader: () => Promise<T>,
+  options?: { force?: boolean }
+): Promise<T> {
+  const force = options?.force === true;
+  if (force) {
+    memory.delete(key);
+    inflight.delete(key);
+    await deletePersisted(key);
+  }
   const hit = memory.get(key);
-  if (hit && Date.now() - hit.at < hit.ttl) return Promise.resolve(hit.data as T);
-  if (persist) {
-    const stored = readSession<T>(key);
-    if (stored != null) {
-      memory.set(key, { at: Date.now(), ttl, data: stored });
-      return Promise.resolve(stored);
-    }
+  if (!force && hit && Date.now() - hit.at < hit.ttl) return hit.data as T;
+  const stored = await readPersisted<T>(key);
+  if (stored != null) {
+    memory.set(key, { at: Date.now(), ttl, data: stored });
+    return stored;
   }
   const pending = inflight.get(key);
-  if (pending) return pending as Promise<T>;
+  if (!force && pending) return pending as Promise<T>;
 
   const request = loader()
-    .then((data) => {
+    .then(async (data) => {
       memory.set(key, { at: Date.now(), ttl, data });
       const empty = Array.isArray(data) && data.length === 0;
-      if (persist && !empty) writeSession(key, ttl, data);
+      if (!empty) await writePersisted(key, ttl, data);
       return data;
     })
     .finally(() => {
@@ -123,6 +144,35 @@ export function marketGet<T>(url: string, ttl = TTL.seconds(30), persist = false
       return jsonp<T>(url);
     }
   });
+}
+
+export function marketGetForce<T>(url: string, ttl = TTL.seconds(30), persist = false): Promise<T> {
+  return cached(
+    cacheKey(url),
+    ttl,
+    persist,
+    async () => {
+      if (isEastmoney(url)) return jsonp<T>(url);
+      try {
+        return await fetchJson<T>(url);
+      } catch {
+        return jsonp<T>(url);
+      }
+    },
+    { force: true }
+  );
+}
+
+export async function clearMarketCache(pattern = ''): Promise<void> {
+  for (const key of [...memory.keys()]) {
+    if (!pattern || key.includes(pattern)) {
+      memory.delete(key);
+      inflight.delete(key);
+    }
+  }
+  if (typeof window !== 'undefined') {
+    await indexedDBCache.clearPattern(`market:${pattern}`);
+  }
 }
 
 export async function mapBatches<T, R>(items: T[], size: number, mapper: (item: T) => Promise<R>): Promise<R[]> {

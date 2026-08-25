@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 type SectorTrendTrajectoryProps = {
   data: MarketTrendPanelData;
   onSelectStock?: (code: string, name: string) => void;
+  refreshToken?: number;
 };
 
 type MemberSortKey = 'rank' | 'changePercent' | 'amount' | 'turnoverRate';
@@ -205,7 +206,7 @@ function endLabelPosition(index: number, values: Array<{ id: string; y: number }
   return sorted.find((item) => item.id === values[index].id)?.y ?? values[index].y;
 }
 
-export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTrendTrajectoryProps) {
+export default function SectorTrendTrajectory({ data, onSelectStock, refreshToken = 0 }: SectorTrendTrajectoryProps) {
   const topics = useMemo(() => data.topics || [], [data.topics]);
   const [selectedId, setSelectedId] = useState<string | null>(topics[0]?.id ?? null);
   const [histories, setHistories] = useState<Record<string, TopicHistoryPoint[]>>({});
@@ -222,6 +223,13 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
       setSelectedId(topics[0].id);
     }
   }, [selectedId, topics]);
+
+  useEffect(() => {
+    if (refreshToken === 0) return;
+    setHistories({});
+    setMembersById({});
+    setHover(null);
+  }, [refreshToken]);
 
   useEffect(() => {
     const missing = topics.filter((topic) => !histories[topic.id]).map((topic) => topic.id);
@@ -244,7 +252,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
     return () => {
       active = false;
     };
-  }, [data.range, histories, topics]);
+  }, [data.range, histories, refreshToken, topics]);
 
   useEffect(() => {
     if (!selectedId || membersById[selectedId]) return;
@@ -270,7 +278,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
     return () => {
       active = false;
     };
-  }, [data.stockTags, membersById, selectedId]);
+  }, [data.stockTags, membersById, refreshToken, selectedId]);
 
   const selectedTopic = topics.find((topic) => topic.id === selectedId) || topics[0] || null;
   const activeHistory = selectedTopic
