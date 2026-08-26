@@ -4,7 +4,6 @@ import { isoDate, matchPlate, normalizeCode, normalizePlateName } from './format
 
 const INFLOW_COLORS = ['#ff5a6f', '#5b8def', '#18b7d8', '#f59e0b', '#14b8a6'];
 const OUTFLOW_COLORS = ['#f7bfc5', '#c8d4f2', '#b9e8ee', '#f6d8ae', '#cfe9df'];
-const WEIGHTS = { change: 0.25, upRatio: 0.2, ztRatio: 0.25, amountChange: 0.1, netFlow: 0.2 };
 const CANDIDATE_LIMIT = 32;
 
 export const EMPTY_SECTOR_TREND: MarketTrendPanelData = {
@@ -27,20 +26,26 @@ function plateSize(plate: PlateFlow): number {
   return plate.upCount + plate.downCount + plate.flatCount;
 }
 
-function strengthScore(input: {
-  change: number;
-  upRatio: number;
-  ztRatio: number;
-  amountChange: number;
-  netFlow: number;
+function percentileRank(values: number[], value: number): number {
+  if (values.length <= 1) return 100;
+  const ranked = [...values].sort((a, b) => b - a);
+  const index = ranked.findIndex((item) => item === value);
+  const rank = index === -1 ? ranked.length : index + 1;
+  return clampScore(((ranked.length - rank) / (ranked.length - 1)) * 100);
+}
+
+function candidateRpsScore(input: {
+  changeRank: number;
+  netFlowRank: number;
+  flowIntensityRank: number;
+  breadthRank: number;
+  amountRank: number;
 }): number {
-  return clampScore(
-    WEIGHTS.change * clampScore(50 + (input.change / 8) * 50) +
-      WEIGHTS.upRatio * clampScore(input.upRatio * 100) +
-      WEIGHTS.ztRatio * clampScore((input.ztRatio / 0.12) * 100) +
-      WEIGHTS.amountChange * clampScore(50 + (input.amountChange / 0.8) * 50) +
-      WEIGHTS.netFlow * clampScore(50 + (input.netFlow / 20) * 50)
-  );
+  const priceScore = input.changeRank;
+  const flowScore = input.netFlowRank * 0.65 + input.flowIntensityRank * 0.35;
+  const breadthScore = input.breadthRank;
+  const activityScore = input.amountRank;
+  return clampScore(flowScore * 0.35 + breadthScore * 0.3 + priceScore * 0.2 + activityScore * 0.15);
 }
 
 function inferPhase(score: number): MarketTrendStage {
@@ -99,22 +104,15 @@ function toTopic(
   flow: MarketTrendTopic['flow'],
   colors: string[],
   date: string,
-  meanAmount: number,
   ztList: TopicStock[],
-  surge: SurgeLimitStock[]
+  surge: SurgeLimitStock[],
+  score: number,
+  amountChange: number
 ): MarketTrendTopic {
   const size = Math.max(plateSize(plate), 1);
   const ztCount = ztCountForPlate(plate, ztList, surge);
   const ztRatio = ztCount / size;
   const breadth = plate.upCount / size;
-  const amountChange = (plate.amount - meanAmount) / meanAmount;
-  const score = strengthScore({
-    change: plate.change,
-    upRatio: breadth,
-    ztRatio,
-    amountChange,
-    netFlow: plate.netFlow,
-  });
   return {
     id: plate.code,
     name: plate.name,
@@ -164,18 +162,46 @@ export function buildSectorTrendData(
 
   const meanAmount = picked.reduce((sum, plate) => sum + plate.amount, 0) / picked.length || 1;
   const date = isoDate(latestDay);
-  const topics = picked.map((plate, index) =>
-    toTopic(
+  const metrics = picked.map((plate) => {
+    const size = Math.max(plateSize(plate), 1);
+    const breadth = plate.upCount / size;
+    const amountChange = (plate.amount - meanAmount) / meanAmount;
+    const flowIntensity = plate.amount > 0 ? plate.netFlow / plate.amount : 0;
+    return {
       plate,
+      breadth,
+      amountChange,
+      flowIntensity,
+    };
+  });
+
+  const changeValues = metrics.map((item) => item.plate.change);
+  const netFlowValues = metrics.map((item) => item.plate.netFlow);
+  const flowIntensityValues = metrics.map((item) => item.flowIntensity);
+  const breadthValues = metrics.map((item) => item.breadth);
+  const amountValues = metrics.map((item) => item.plate.amount);
+
+  const topics = metrics.map((item, index) => {
+    const score = candidateRpsScore({
+      changeRank: percentileRank(changeValues, item.plate.change),
+      netFlowRank: percentileRank(netFlowValues, item.plate.netFlow),
+      flowIntensityRank: percentileRank(flowIntensityValues, item.flowIntensity),
+      breadthRank: percentileRank(breadthValues, item.breadth),
+      amountRank: percentileRank(amountValues, item.plate.amount),
+    });
+
+    return toTopic(
+      item.plate,
       index,
-      plate.netFlow >= 0 ? 'in' : 'out',
-      plate.netFlow >= 0 ? INFLOW_COLORS : OUTFLOW_COLORS,
+      item.plate.netFlow >= 0 ? 'in' : 'out',
+      item.plate.netFlow >= 0 ? INFLOW_COLORS : OUTFLOW_COLORS,
       date,
-      meanAmount,
       ztList,
-      surge
-    )
-  );
+      surge,
+      score,
+      item.amountChange
+    );
+  });
 
   return {
     range: 20,
