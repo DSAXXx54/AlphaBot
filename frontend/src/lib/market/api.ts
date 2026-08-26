@@ -2,6 +2,7 @@ import { TTL, mapBatches, marketGet, marketGetForce } from './client';
 import { asNumber, formatAmount, formatAmountChange, formatChange, normalizeCode, normalizePlateName, yyyymmdd } from './format';
 import type { MarketPayoffItem, TurnoverMinutePoint, TurnoverSnapshot } from './types';
 import { api } from '../api';
+import { indexedDBCache } from '../indexedDBCache';
 
 export type PlateFlow = {
   code: string;
@@ -538,24 +539,47 @@ export async function loadSurgeLimitUp(force = false): Promise<SurgeLimitStock[]
 }
 
 export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
-  const url = `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(
-    'm:90+t:3'
-  )}&fields=f12,f14&pn=1&pz=500&po=1&cb=__em`;
-  const map = new Map<string, string>();
+  const dictionaryCacheKey = 'market:plate-dictionary:v1';
   try {
-    const data = await marketGet<{ data?: { diff?: Array<{ f12?: string; f14?: string }> | Record<string, { f12?: string; f14?: string }> } }>(
-      url,
-      TTL.hours(8),
-      true
-    );
-    const diff = data?.data?.diff;
-    const rows = Array.isArray(diff) ? diff : diff ? Object.values(diff) : [];
-    rows.forEach((item) => {
-      if (item.f14 && item.f12) map.set(item.f14, item.f12);
-    });
+    const cached = await indexedDBCache.get<Array<[string, string]>>(dictionaryCacheKey);
+    if (cached && cached.length > 0) {
+      return new Map(cached);
+    }
   } catch {
-    // keep empty map
+    // ignore cache read failures
   }
+
+  const map = new Map<string, string>();
+  const pageSize = 500;
+
+  for (let page = 1; page < 100; page += 1) {
+    const url = `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(
+      'm:90+t:3'
+    )}&fields=f12,f14&pn=${page}&pz=${pageSize}&po=1&cb=__em`;
+
+    try {
+      const data = await marketGet<{
+        data?: { diff?: Array<{ f12?: string; f14?: string }> | Record<string, { f12?: string; f14?: string }> };
+      }>(url, TTL.hours(1), false);
+      const diff = data?.data?.diff;
+      const rows = Array.isArray(diff) ? diff : diff ? Object.values(diff) : [];
+      rows.forEach((item) => {
+        if (item.f14 && item.f12) map.set(item.f14, item.f12);
+      });
+      if (rows.length < pageSize) break;
+    } catch {
+      break;
+    }
+  }
+
+  if (map.size > 0) {
+    try {
+      await indexedDBCache.set(dictionaryCacheKey, Array.from(map.entries()), TTL.days(7));
+    } catch {
+      // ignore cache write failures
+    }
+  }
+
   return map;
 }
 

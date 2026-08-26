@@ -7,6 +7,7 @@ export const TTL = {
   seconds: (value: number) => value * 1000,
   minutes: (value: number) => value * 60_000,
   hours: (value: number) => value * 3_600_000,
+  days: (value: number) => value * 86_400_000,
 };
 
 export function cacheKey(url: string): string {
