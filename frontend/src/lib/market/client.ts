@@ -61,21 +61,31 @@ export async function cached<T>(
 ): Promise<T> {
   const force = options?.force === true;
   if (force) {
+    console.info('[market-cache] force-clear', { key, persist, ttl });
     memory.delete(key);
     inflight.delete(key);
     if (persist) await deletePersisted(key);
   }
   const hit = memory.get(key);
-  if (!force && hit && Date.now() - hit.at < hit.ttl) return hit.data as T;
+  if (!force && hit && Date.now() - hit.at < hit.ttl) {
+    console.info('[market-cache] memory-hit', { key, persist, ttl });
+    return hit.data as T;
+  }
   if (persist) {
     const stored = await readPersisted<T>(key);
     if (stored != null) {
+      console.info('[market-cache] persisted-hit', { key, ttl });
       memory.set(key, { at: Date.now(), ttl, data: stored });
       return stored;
     }
   }
   const pending = inflight.get(key);
-  if (!force && pending) return pending as Promise<T>;
+  if (!force && pending) {
+    console.info('[market-cache] inflight-hit', { key, persist, ttl });
+    return pending as Promise<T>;
+  }
+
+  console.info('[market-cache] miss', { key, persist, ttl, force });
 
   const request = loader()
     .then(async (data) => {

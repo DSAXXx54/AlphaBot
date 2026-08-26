@@ -1,4 +1,4 @@
-import { buildMarketCacheKey, TTL, mapBatches, marketGet, marketGetForce } from './client';
+import { buildMarketCacheKey, cached, TTL, mapBatches, marketGet, marketGetForce } from './client';
 import { asNumber, formatAmount, formatAmountChange, formatChange, normalizeCode, normalizePlateName, yyyymmdd } from './format';
 import type { MarketPayoffItem, TurnoverMinutePoint, TurnoverSnapshot } from './types';
 import { api } from '../api';
@@ -127,16 +127,22 @@ export async function loadTradingDays(limit = 20, force = false): Promise<string
   try {
     const today = new Date();
     const endDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-    const response = await api.get<{ success: boolean; data?: { days?: string[] }; error?: string }>(
-      `/market/trading-calendar?limit=${limit}&end_date=${endDate}`,
-      {
-        headers: force ? { 'Cache-Control': 'no-cache' } : undefined,
-      }
+    const response = await cached<{ success: boolean; data?: { days?: string[] }; error?: string }>(
+      buildMarketCacheKey('loadTradingDays', { limit, endDate }),
+      TTL.hours(24),
+      true,
+      async () => {
+        const result = await api.get<{ success: boolean; data?: { days?: string[] }; error?: string }>(
+          `/market/trading-calendar?limit=${limit}&end_date=${endDate}`
+        );
+        return result.data;
+      },
+      { force }
     );
-    if (!response.data.success || !response.data.data?.days) {
+    if (!response.success || !response.data?.days) {
       return [];
     }
-    return response.data.data.days.map((day) => day.replace(/-/g, '')).filter((day) => /^\d{8}$/.test(day));
+    return response.data.days.map((day) => day.replace(/-/g, '')).filter((day) => /^\d{8}$/.test(day));
   } catch (error) {
     console.warn('[market] loadTradingDays failed', error);
     return [];
