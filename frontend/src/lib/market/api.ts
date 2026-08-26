@@ -125,8 +125,10 @@ async function loadPool(type: TopicStock['type'], dateStr: string, latest: boole
 
 export async function loadTradingDays(limit = 20, force = false): Promise<string[]> {
   try {
+    const today = new Date();
+    const endDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     const response = await api.get<{ success: boolean; data?: { days?: string[] }; error?: string }>(
-      `/market/trading-calendar?limit=${limit}`,
+      `/market/trading-calendar?limit=${limit}&end_date=${endDate}`,
       {
         headers: force ? { 'Cache-Control': 'no-cache' } : undefined,
       }
