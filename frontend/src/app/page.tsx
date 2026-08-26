@@ -15,7 +15,7 @@ import {
   DEFAULT_MARKET_SNAPSHOT,
   loadEmotionSnapshot,
   loadMainlineSnapshot,
-  loadMarketSnapshot,
+  loadMarketSummarySnapshot,
   loadPayoffSnapshot,
   loadTrendSnapshot,
 } from '@/lib/market/snapshot';
@@ -107,6 +107,12 @@ const EMPTY_CARD_REFRESH: Record<MarketCardLabel, boolean> = {
   主线: false,
   赚钱效应: false,
 };
+const EMPTY_CARD_DETAILS: Record<MarketCardLabel, boolean> = {
+  趋势: false,
+  情绪: false,
+  主线: true,
+  赚钱效应: true,
+};
 
 function toneTextClassName(tone?: 'up' | 'down' | 'normal') {
   if (tone === 'down') return 'text-emerald-600 dark:text-emerald-300';
@@ -144,8 +150,8 @@ export default function Home() {
   const [marketLoading, setMarketLoading] = useState(false);
   const [cardRefreshing, setCardRefreshing] = useState<Record<MarketCardLabel, boolean>>(() => ({ ...EMPTY_CARD_REFRESH }));
   const [autoRefresh, setAutoRefresh] = useState<Record<MarketCardLabel, boolean>>(() => ({ ...EMPTY_CARD_REFRESH }));
+  const [loadedMarketCards, setLoadedMarketCards] = useState<Record<MarketCardLabel, boolean>>(() => ({ ...EMPTY_CARD_DETAILS }));
   const [activeMarketCard, setActiveMarketCard] = useState<MarketCardLabel | null>(null);
-  const [trendRefreshToken, setTrendRefreshToken] = useState(0);
   const [selectedEmotionDate, setSelectedEmotionDate] = useState<string | null>(null);
   const [emotionOverviewMode, setEmotionOverviewMode] = useState<'intraday' | 'short'>('short');
   const [shortEmotionCycle, setShortEmotionCycle] = useState<1 | 3 | 5 | 10 | 20>(5);
@@ -256,9 +262,13 @@ export default function Home() {
         })
       );
       setMarketSnapshot((current) => results.reduce((next, result) => result.apply(next), current));
-      if (results.some((result) => result.label === '趋势')) {
-        setTrendRefreshToken((current) => current + 1);
-      }
+      setLoadedMarketCards((current) => {
+        const next = { ...current };
+        labels.forEach((label) => {
+          next[label] = true;
+        });
+        return next;
+      });
     } catch (error: unknown) {
       console.error('加载市场总览失败:', error);
     } finally {
@@ -280,7 +290,8 @@ export default function Home() {
 
     let active = true;
     setMarketLoading(true);
-    loadMarketSnapshot()
+    setLoadedMarketCards({ ...EMPTY_CARD_DETAILS });
+    loadMarketSummarySnapshot()
       .then((snapshot) => {
         if (active) setMarketSnapshot(snapshot);
       })
@@ -296,6 +307,16 @@ export default function Home() {
       active = false;
     };
   }, [isAuthenticated, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== 'market' || !isAuthenticated || !activeMarketCard) {
+      return;
+    }
+    if (loadedMarketCards[activeMarketCard]) {
+      return;
+    }
+    void refreshMarket([activeMarketCard], false);
+  }, [activeMarketCard, isAuthenticated, loadedMarketCards, refreshMarket, viewMode]);
 
   useEffect(() => {
     if (viewMode !== 'market' || !isAuthenticated) {
@@ -776,7 +797,6 @@ export default function Home() {
                       <SectorTrendTrajectory
                         data={marketSnapshot.sectorTrend}
                         onSelectStock={handleSelectMarketStock}
-                        refreshToken={trendRefreshToken}
                       />
                     </div>
                   ) : activeMarketCard === '情绪' ? (

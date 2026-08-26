@@ -207,7 +207,7 @@ function specificPlateUrl(codes: string[]) {
 async function loadSpecificPlates(codes: string[], force = false): Promise<PlateFlow[]> {
   if (codes.length === 0) return [];
   try {
-    const data = await marketLoad<ClistResponse>(specificPlateUrl(codes), TTL.seconds(20), false, force);
+    const data = await marketLoad<ClistResponse>(specificPlateUrl(codes), TTL.minutes(2), false, force);
     return parsePlateList(data);
   } catch {
     return [];
@@ -217,8 +217,8 @@ async function loadSpecificPlates(codes: string[], force = false): Promise<Plate
 export async function loadPlateFlows(force = false): Promise<{ inflow: PlateFlow[]; outflow: PlateFlow[] }> {
   try {
     const [inData, outData] = await Promise.all([
-      marketLoad<ClistResponse>(plateListUrl('f62', 1), TTL.seconds(20), false, force),
-      marketLoad<ClistResponse>(plateListUrl('f62', 0), TTL.seconds(20), false, force),
+      marketLoad<ClistResponse>(plateListUrl('f62', 1), TTL.minutes(2), false, force),
+      marketLoad<ClistResponse>(plateListUrl('f62', 0), TTL.minutes(2), false, force),
     ]);
     return {
       inflow: parsePlateList(inData).slice(0, 5),
@@ -238,8 +238,8 @@ export async function loadPlateUniverse(options?: {
   const priorityNames = options?.priorityNames ?? [];
   const force = options?.force === true;
   const [flowResult, changeResult] = await Promise.allSettled([
-    marketLoad<ClistResponse>(plateListUrl('f62', 1, sampleSize), TTL.seconds(20), false, force),
-    marketLoad<ClistResponse>(plateListUrl('f3', 1, sampleSize), TTL.seconds(20), false, force),
+    marketLoad<ClistResponse>(plateListUrl('f62', 1, sampleSize), TTL.minutes(2), false, force),
+    marketLoad<ClistResponse>(plateListUrl('f3', 1, sampleSize), TTL.minutes(2), false, force),
   ]);
 
   const merged = new Map<string, PlateFlow>();
@@ -333,7 +333,7 @@ export async function loadTopicPools(days: string[], force = false): Promise<{
 export async function loadPlateMembers(code: string, force = false): Promise<PlateMember[]> {
   const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=80&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${code}`)}&fields=f2,f3,f6,f8,f12,f14,f62&cb=__em`;
   try {
-    const data = await marketLoad<ClistResponse>(url, TTL.seconds(30), false, force);
+    const data = await marketLoad<ClistResponse>(url, TTL.minutes(2), false, force);
     return clistDiff(data)
       .filter((item) => item.f12)
       .map((item) => ({
@@ -514,7 +514,7 @@ export async function loadPlateFlowHistory(code: string, limit = 20, force = fal
 export async function loadSurgeLimitUp(force = false): Promise<SurgeLimitStock[]> {
   const url = `https://flash-api.xuangubao.com.cn/api/surge_stock/stocks?normal=true&uplimit=true&_=${Date.now()}`;
   try {
-    const data = await marketLoad<{ code?: number; data?: { items?: Array<Array<unknown>> } }>(url, TTL.seconds(30), false, force);
+    const data = await marketLoad<{ code?: number; data?: { items?: Array<Array<unknown>> } }>(url, TTL.seconds(45), false, force);
     if (data.code !== 20000 || !data.data?.items) return [];
     return data.data.items
       .map((item) => {
@@ -576,7 +576,7 @@ export async function loadStrong(force = false): Promise<MarketPayoffItem[]> {
         m_days_n_boards_days?: number;
         m_days_n_boards_boards?: number;
       }>;
-    }>(url, TTL.minutes(1), false, force);
+    }>(url, TTL.minutes(2), false, force);
     if (data.code !== 20000 || !data.data) return [];
     return data.data
       .filter((item) => {
@@ -617,7 +617,7 @@ export async function loadHot(force = false): Promise<MarketPayoffItem[]> {
           analyse_title?: string;
         }>;
       }>
-    >(url, TTL.minutes(1), false, force);
+    >(url, TTL.minutes(2), false, force);
     if (data.status_code !== 0 || !data.data?.stock_list) return [];
     return data.data.stock_list.slice(0, LIST_LIMIT).map((item) => {
       const change = item.rise_and_fall || 0;
@@ -637,9 +637,10 @@ export async function loadHot(force = false): Promise<MarketPayoffItem[]> {
 
 export async function loadBigFace(days: string[], force = false): Promise<MarketPayoffItem[]> {
   const candidates = days.length > 0 ? days.slice(-3).reverse() : [yyyymmdd()];
-  for (const dateStr of candidates) {
+  for (const [index, dateStr] of candidates.entries()) {
     const url = `https://data.10jqka.com.cn/mobileapi/hotspot_focus/stock_pool/v1/get_drawdown_stocks?date=${dateStr}&cate=limit_up&sort_field=max_drawdown&sort_dir=asc&page=1&size=200`;
     try {
+      const isLatestCandidate = index === 0;
       const data = await marketLoad<
         ThsEnvelope<{
           stock_list?: Array<{
@@ -650,7 +651,7 @@ export async function loadBigFace(days: string[], force = false): Promise<Market
             industry_block?: string;
           }>;
         }>
-      >(url, TTL.minutes(5), true, force);
+      >(url, isLatestCandidate ? TTL.minutes(2) : TTL.hours(8), !isLatestCandidate, force);
       const rows = data.data?.stock_list?.filter((item) => !item.is_st) || [];
       if (rows.length === 0) continue;
       return rows

@@ -9,7 +9,6 @@ import { cn } from '@/lib/utils';
 type SectorTrendTrajectoryProps = {
   data: MarketTrendPanelData;
   onSelectStock?: (code: string, name: string) => void;
-  refreshToken?: number;
 };
 
 type MemberSortKey = 'rank' | 'changePercent' | 'amount' | 'turnoverRate';
@@ -381,7 +380,7 @@ function endLabelPosition(index: number, values: Array<{ id: string; y: number }
   return sorted.find((item) => item.id === values[index].id)?.y ?? values[index].y;
 }
 
-export default function SectorTrendTrajectory({ data, onSelectStock, refreshToken = 0 }: SectorTrendTrajectoryProps) {
+export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTrendTrajectoryProps) {
   const topics = useMemo(() => data.topics || [], [data.topics]);
   const [selectedId, setSelectedId] = useState<string | null>(topics[0]?.id ?? null);
   const [viewMode, setViewMode] = useState<RankingViewMode>('today');
@@ -390,7 +389,6 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
   const [sortBy, setSortBy] = useState<{ key: MemberSortKey; dir: 'asc' | 'desc' }>({ key: 'rank', dir: 'asc' });
   const [hover, setHover] = useState<{ topicId: string; pointIndex: number } | null>(null);
   const [detailHoverIndex, setDetailHoverIndex] = useState<number | null>(null);
-  const shouldForceAuxFetch = refreshToken > 0;
 
   useEffect(() => {
     if (topics.length === 0) {
@@ -403,21 +401,13 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
   }, [selectedId, topics]);
 
   useEffect(() => {
-    if (refreshToken === 0) return;
-    setHistories({});
-    setMembersById({});
-    setHover(null);
-    setDetailHoverIndex(null);
-  }, [refreshToken]);
-
-  useEffect(() => {
     setDetailHoverIndex(null);
   }, [selectedId, viewMode]);
 
   useEffect(() => {
     if (!selectedId || membersById[selectedId]) return;
     let active = true;
-    loadPlateMembers(selectedId, shouldForceAuxFetch)
+    loadPlateMembers(selectedId, false)
       .then((members) => {
         if (!active) return;
         setMembersById((current) => ({
@@ -440,7 +430,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
     return () => {
       active = false;
     };
-  }, [data.stockTags, membersById, refreshToken, selectedId, shouldForceAuxFetch]);
+  }, [data.stockTags, membersById, selectedId]);
 
   const historiesWithRank = useMemo(() => {
     const byDate = new Map<string, Array<{ id: string; score: number; flow: number }>>();
@@ -553,7 +543,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
     ];
 
     const consumeBatch = async (batchIds: string[]) => {
-      const results = await Promise.all(batchIds.map((id) => loadPlateFlowHistory(id, data.range || 20, shouldForceAuxFetch)));
+      const results = await Promise.all(batchIds.map((id) => loadPlateFlowHistory(id, data.range || 20, false)));
       if (!active) return;
       setHistories((current) => {
         const next = { ...current };
@@ -581,7 +571,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
     return () => {
       active = false;
     };
-  }, [data.range, histories, historyTargetIds, refreshToken, selectedId, shouldForceAuxFetch, topics]);
+  }, [data.range, histories, historyTargetIds, selectedId, topics]);
 
   const pulseSummary = useMemo(() => {
     const count = (state: SectorPulseState) => topicInsights.filter((item) => item.state === state).length;
@@ -760,7 +750,9 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
                 <div>
                   <div className="text-sm font-semibold text-foreground">活跃板块排行榜</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    {viewMode === 'today' ? '同一批板块按当日活跃度重排，优先回答“现在谁最活跃”。' : '同一批板块切到趋势排序，更容易看出持续强化与一日游。'}
+                    {viewMode === 'today'
+                      ? '按当日综合强度重排，优先回答“现在谁最活跃”。'
+                      : '切到 3 日趋势排行，重点看资金强度斜率、持续性和位次抬升。'}
                   </div>
                 </div>
                 <div className="inline-flex rounded-full border border-border/60 bg-background p-1 shadow-sm">
@@ -816,8 +808,10 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
                       </div>
                     </div>
                     <div>
-                      <div className="text-xs text-muted-foreground">{viewMode === 'today' ? '今日强度' : '最新强度'}</div>
-                      <div className="mt-1 text-sm font-semibold text-foreground">{item.latest.strengthScore.toFixed(1)}</div>
+                      <div className="text-xs text-muted-foreground">{viewMode === 'today' ? '综合强度' : '最新资金强度'}</div>
+                      <div className="mt-1 text-sm font-semibold text-foreground">
+                        {viewMode === 'today' ? item.topic.score.toFixed(1) : item.latest.strengthScore.toFixed(1)}
+                      </div>
                     </div>
                     <div>
                       {viewMode === 'today' ? (
@@ -896,11 +890,15 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
               <div className="p-4">
                 <div className="grid gap-3 sm:grid-cols-3">
                   <div className="rounded-[18px] border border-border/60 px-3.5 py-3">
-                    <div className="text-xs text-muted-foreground">当前强度</div>
+                    <div className="text-xs text-muted-foreground">当前资金强度</div>
                     <strong className="mt-1.5 block text-xl font-semibold text-foreground">{selectedInsight.latest.strengthScore.toFixed(1)}</strong>
                     <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
                       <span>今日主力</span>
                       <span className={selectedInsight.topic.moneyFlow >= 0 ? 'text-rose-600' : 'text-emerald-600'}>{formatSignedYi(selectedInsight.topic.moneyFlow)}</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>今日综合强度</span>
+                      <span className="text-foreground">{selectedInsight.topic.score.toFixed(1)}</span>
                     </div>
                     <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
                       <span>成交额</span>
@@ -935,7 +933,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
                   </div>
                 </div>
                 <div className="mt-4 space-y-4">
-                  <div className="text-xs text-muted-foreground">近 {Math.min(selectedInsight.points.length, 10)} 个交易日强度轨迹</div>
+                  <div className="text-xs text-muted-foreground">近 {Math.min(selectedInsight.points.length, 10)} 个交易日资金强度轨迹</div>
                   {(() => {
                     const sparkPoints = selectedInsight.points.slice(-10);
                     const scoreValues = sparkPoints.map((point) => point.strengthScore);
@@ -1042,13 +1040,13 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
                               </div>
                               <div className="mt-1 text-foreground">{buildStateNote(activePoint, activePrev)}</div>
                               <div className="mt-1 text-muted-foreground">
-                                强度 {activePoint.strengthScore.toFixed(1)} · 净流入 {formatSignedYi(activePoint.mainNetInflow)} · 净占比 {formatPercent(activePoint.mainNetInflowRatio, 1)}
+                                资金强度 {activePoint.strengthScore.toFixed(1)} · 净流入 {formatSignedYi(activePoint.mainNetInflow)} · 净占比 {formatPercent(activePoint.mainNetInflowRatio, 1)}
                               </div>
                             </div>
                           ) : null}
                         </div>
                         <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-                          <span>强度 1D {formatPercent(selectedInsight.scoreDelta1d, 1)}</span>
+                          <span>资金强度 1D {formatPercent(selectedInsight.scoreDelta1d, 1)}</span>
                           <span>资金 3D {formatSignedYi(selectedInsight.flowDelta3d)}</span>
                           <span>虚线: 主力净流入占比</span>
                           <span>彩环点: 近5日状态</span>
@@ -1113,8 +1111,8 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
 
         <div className="overflow-hidden rounded-[26px] border border-border/70 bg-background shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
           <div className="border-b border-border/60 px-4 py-3.5">
-            <div className="text-sm font-semibold text-foreground">历史强度时序</div>
-            <div className="mt-1 text-xs text-muted-foreground">柱体看当日强度，折线看真实资金流 EXPMA(3) 偏离，便于把今天截面放回近几日背景里。</div>
+            <div className="text-sm font-semibold text-foreground">历史资金强度时序</div>
+            <div className="mt-1 text-xs text-muted-foreground">柱体看每日资金强度，折线看真实资金流 EXPMA(3) 偏离；它和排行榜里的综合强度是两套口径。</div>
           </div>
           <div className="relative overflow-x-auto">
             <svg viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} className="min-w-[980px] w-full" onMouseLeave={() => setHover(null)}>
@@ -1242,9 +1240,9 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
                 <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5">
                   <div className="text-muted-foreground">EXPMA(3)</div>
                   <div className="text-right text-foreground">{formatSignedYi(hoverPoint.expmaValue)}</div>
-                  <div className="text-muted-foreground">流向强度</div>
+                  <div className="text-muted-foreground">资金流斜率</div>
                   <div className="text-right text-foreground">{formatPercent(hoverPoint.expmaDeltaPct, 1)}</div>
-                  <div className="text-muted-foreground">日强度</div>
+                  <div className="text-muted-foreground">日资金强度</div>
                   <div className="text-right text-foreground">{hoverPoint.strengthScore.toFixed(1)}</div>
                   <div className="text-muted-foreground">主力净流入</div>
                   <div className={cn('text-right', hoverPoint.mainNetInflow >= 0 ? 'text-rose-600' : 'text-emerald-600')}>{formatSignedYi(hoverPoint.mainNetInflow)}</div>
@@ -1285,7 +1283,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
                   {FLOW_META[selectedTopic.flow].label}
                 </span>
                 <span className={cn('rounded-full px-2.5 py-0.5 font-medium', PHASE_STYLES[selectedTopic.phase])}>{selectedTopic.phase}</span>
-                <span className="rounded-full bg-muted/30 px-2.5 py-0.5 text-muted-foreground">趋势强度 {selectedTopic.score.toFixed(1)}</span>
+                <span className="rounded-full bg-muted/30 px-2.5 py-0.5 text-muted-foreground">综合强度 {selectedTopic.score.toFixed(1)}</span>
                 <span className={cn('rounded-full px-2.5 py-0.5', selectedTopic.changePct >= 0 ? 'bg-rose-50 text-rose-600 dark:bg-rose-950/30 dark:text-rose-300' : 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-300')}>
                   阶段涨跌 {formatPercent(selectedTopic.changePct)}
                 </span>

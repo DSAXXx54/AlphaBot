@@ -42,6 +42,24 @@ export type MarketPayoffSnapshot = {
   facts: string[];
 };
 
+type TopicPoolsBundle = {
+  ztByDate: Map<string, TopicStock[]>;
+  zbByDate: Map<string, TopicStock[]>;
+  dtByDate: Map<string, TopicStock[]>;
+};
+
+type LatestMarketContext = {
+  latestDay: string;
+  pools: TopicPoolsBundle;
+  latestZt: TopicStock[];
+  latestZb: TopicStock[];
+  latestDt: TopicStock[];
+  surge: Awaited<ReturnType<typeof loadSurgeLimitUp>>;
+  priorityNames: string[];
+  baseUniverse: Awaited<ReturnType<typeof loadPlateUniverse>>;
+  trendUniverse: Awaited<ReturnType<typeof loadPlateUniverse>>;
+};
+
 function joinNames(names: Array<string | undefined>, limit = 2): string {
   const values = names.filter((name): name is string => Boolean(name)).slice(0, limit);
   return values.length > 0 ? values.join('、') : '--';
@@ -275,6 +293,47 @@ function appendPriorityNames(base: string[], extras: string[]): string[] {
   return base;
 }
 
+function emptyPools(): TopicPoolsBundle {
+  return {
+    ztByDate: new Map<string, TopicStock[]>(),
+    zbByDate: new Map<string, TopicStock[]>(),
+    dtByDate: new Map<string, TopicStock[]>(),
+  };
+}
+
+async function loadLatestMarketContext(force = false): Promise<LatestMarketContext> {
+  const tradingDays = await loadTradingDays(1, force);
+  const latestDay = tradingDays[tradingDays.length - 1] || '';
+  const [pools, surge, baseUniverse] = await Promise.all([
+    latestDay ? loadTopicPools([latestDay], force) : Promise.resolve(emptyPools()),
+    loadSurgeLimitUp(force),
+    loadPlateUniverse({ force }),
+  ]);
+  const latestZt = latestDay ? pools.ztByDate.get(latestDay) || [] : [];
+  const latestZb = latestDay ? pools.zbByDate.get(latestDay) || [] : [];
+  const latestDt = latestDay ? pools.dtByDate.get(latestDay) || [] : [];
+  const priorityNames = appendPriorityNames(
+    priorityPlateNames(latestZt, latestZb, latestDt),
+    surge.flatMap((item) => item.plates)
+  );
+  const trendUniverse =
+    priorityNames.length === 0 || priorityNames.every((name) => matchPlate(baseUniverse, name))
+      ? baseUniverse
+      : await loadPlateUniverse({ priorityNames, force });
+
+  return {
+    latestDay,
+    pools,
+    latestZt,
+    latestZb,
+    latestDt,
+    surge,
+    priorityNames,
+    baseUniverse,
+    trendUniverse,
+  };
+}
+
 async function buildEmotionSnapshot(limit: number, force = false): Promise<MarketEmotionSnapshot> {
   const tradingDays = await loadTradingDays(limit, force);
   const pools =
@@ -306,37 +365,15 @@ export async function loadEmotionSnapshot(limit = FULL_EMOTION_DAYS, force = fal
 }
 
 export async function loadTrendSnapshot(force = false): Promise<MarketTrendSnapshot> {
-  const tradingDays = await loadTradingDays(1, force);
-  const latestDay = tradingDays[tradingDays.length - 1] || '';
-  const [turnover, pools, surge] = await Promise.all([
-    loadTurnover(force),
-    latestDay
-      ? loadTopicPools([latestDay], force)
-      : Promise.resolve({
-          ztByDate: new Map<string, TopicStock[]>(),
-          zbByDate: new Map<string, TopicStock[]>(),
-          dtByDate: new Map<string, TopicStock[]>(),
-        }),
-    loadSurgeLimitUp(force),
-  ]);
-  const latestZt = latestDay ? pools.ztByDate.get(latestDay) || [] : [];
-  const priorityNames = appendPriorityNames(
-    priorityPlateNames(latestZt),
-    surge.flatMap((item) => item.plates)
-  );
-  const baseUniverse = await loadPlateUniverse({ force });
-  const plateUniverse =
-    priorityNames.length === 0 || priorityNames.every((name) => matchPlate(baseUniverse, name))
-      ? baseUniverse
-      : await loadPlateUniverse({ priorityNames, force });
-  const eventAddedCount = plateUniverse.filter((plate) => !baseUniverse.some((base) => base.code === plate.code)).length;
-  const trendData = buildSectorTrendData(latestDay, plateUniverse, latestZt, surge);
+  const [turnover, context] = await Promise.all([loadTurnover(force), loadLatestMarketContext(force)]);
+  const eventAddedCount = context.trendUniverse.filter((plate) => !context.baseUniverse.some((base) => base.code === plate.code)).length;
+  const trendData = buildSectorTrendData(context.latestDay, context.trendUniverse, context.latestZt, context.surge);
   return {
     turnover,
     sectorTrend: {
       ...trendData,
       sampleStats: {
-        baseCount: baseUniverse.length,
+        baseCount: context.baseUniverse.length,
         eventAddedCount,
         finalCount: trendData.topics.length,
       },
@@ -346,21 +383,12 @@ export async function loadTrendSnapshot(force = false): Promise<MarketTrendSnaps
 }
 
 export async function loadMainlineSnapshot(force = false): Promise<MarketMainlineSnapshot> {
-  const tradingDays = await loadTradingDays(1, force);
-  const latestDay = tradingDays[tradingDays.length - 1] || '';
-  const pools =
-    latestDay
-      ? await loadTopicPools([latestDay], force)
-      : {
-          ztByDate: new Map<string, TopicStock[]>(),
-          zbByDate: new Map<string, TopicStock[]>(),
-          dtByDate: new Map<string, TopicStock[]>(),
-        };
-  const latestZt = latestDay ? pools.ztByDate.get(latestDay) || [] : [];
-  const latestZb = latestDay ? pools.zbByDate.get(latestDay) || [] : [];
-  const latestDt = latestDay ? pools.dtByDate.get(latestDay) || [] : [];
-  const plates = await loadPlateUniverse({ priorityNames: priorityPlateNames(latestZt, latestZb, latestDt), force });
-  const mainlineLanes = buildMainlineLanes(plates, latestZt, buildTopicFundMap(latestZt, latestZb, latestDt));
+  const context = await loadLatestMarketContext(force);
+  const mainlineLanes = buildMainlineLanes(
+    context.trendUniverse,
+    context.latestZt,
+    buildTopicFundMap(context.latestZt, context.latestZb, context.latestDt)
+  );
   return {
     mainlineLanes,
     facts: mainlineFacts(mainlineLanes),
@@ -379,6 +407,54 @@ export async function loadPayoffSnapshot(force = false): Promise<MarketPayoffSna
     payoffLists,
     facts: payoffFacts(payoffLists),
   };
+}
+
+export async function loadMarketSummarySnapshot(force = false): Promise<MarketSnapshot> {
+  const snapshot: MarketSnapshot = JSON.parse(JSON.stringify(DEFAULT_MARKET_SNAPSHOT));
+  const tradingDays = await loadTradingDays(FULL_EMOTION_DAYS, force);
+  const emotionDays = tradingDays.slice(-DEFAULT_EMOTION_DAYS);
+  const [turnoverResult, contextResult, strongResult, hotResult, bigFaceResult] = await Promise.allSettled([
+    loadTurnover(force),
+    loadLatestMarketContext(force),
+    loadStrong(force),
+    loadHot(force),
+    loadBigFace(tradingDays, force),
+  ]);
+
+  const turnover = settledValue(turnoverResult, null);
+  if (turnover) {
+    snapshot.turnover = turnover;
+    snapshot.diagnostics.趋势.facts = trendFacts(turnover);
+  }
+
+  const context = settledValue(contextResult, null);
+  if (context) {
+    const latestEmotion = emotionFromZt(
+      context.latestDay,
+      context.latestZt,
+      deriveGeese([], context.latestZt, context.pools.zbByDate.get(context.latestDay) || [])
+    );
+    snapshot.diagnostics.情绪.facts = emotionFacts(latestEmotion ? [latestEmotion] : []);
+
+    const lanes = buildMainlineLanes(
+      context.trendUniverse,
+      context.latestZt,
+      buildTopicFundMap(context.latestZt, context.latestZb, context.latestDt)
+    );
+    snapshot.mainlineLanes = lanes;
+    snapshot.diagnostics.主线.facts = mainlineFacts(lanes);
+  }
+
+  snapshot.payoffLists.strong = settledValue(strongResult, []);
+  snapshot.payoffLists.hot = settledValue(hotResult, []);
+  snapshot.payoffLists.bigface = settledValue(bigFaceResult, []);
+  snapshot.diagnostics.赚钱效应.facts = payoffFacts(snapshot.payoffLists);
+
+  if (emotionDays.length === 0) {
+    snapshot.diagnostics.情绪.facts = DEFAULT_MARKET_SNAPSHOT.diagnostics.情绪.facts;
+  }
+
+  return snapshot;
 }
 
 export async function loadMarketSnapshot(force = false): Promise<MarketSnapshot> {
