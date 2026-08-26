@@ -113,7 +113,7 @@ async function loadPool(type: TopicStock['type'], dateStr: string, latest: boole
     const data = await marketLoad<TopicPoolResponse>(
       poolUrl(type, dateStr),
       ttl,
-      !latest,
+      true,
       force,
       buildMarketCacheKey('loadTopicPool', { type, date: dateStr, latest })
     );
@@ -223,7 +223,7 @@ async function loadSpecificPlates(codes: string[], force = false): Promise<Plate
     const data = await marketLoad<ClistResponse>(
       specificPlateUrl(codes),
       TTL.minutes(2),
-      false,
+      true,
       force,
       buildMarketCacheKey('loadSpecificPlates', { codes: [...codes].sort().join(',') })
     );
@@ -239,14 +239,14 @@ export async function loadPlateFlows(force = false): Promise<{ inflow: PlateFlow
       marketLoad<ClistResponse>(
         plateListUrl('f62', 1),
         TTL.minutes(2),
-        false,
+        true,
         force,
         buildMarketCacheKey('loadPlateFlows', { direction: 'inflow' })
       ),
       marketLoad<ClistResponse>(
         plateListUrl('f62', 0),
         TTL.minutes(2),
-        false,
+        true,
         force,
         buildMarketCacheKey('loadPlateFlows', { direction: 'outflow' })
       ),
@@ -272,14 +272,14 @@ export async function loadPlateUniverse(options?: {
     marketLoad<ClistResponse>(
       plateListUrl('f62', 1, sampleSize),
       TTL.minutes(2),
-      false,
+      true,
       force,
       buildMarketCacheKey('loadPlateUniverse', { metric: 'netFlow', sampleSize })
     ),
     marketLoad<ClistResponse>(
       plateListUrl('f3', 1, sampleSize),
       TTL.minutes(2),
-      false,
+      true,
       force,
       buildMarketCacheKey('loadPlateUniverse', { metric: 'change', sampleSize })
     ),
@@ -379,7 +379,7 @@ export async function loadPlateMembers(code: string, force = false): Promise<Pla
     const data = await marketLoad<ClistResponse>(
       url,
       TTL.minutes(2),
-      false,
+      true,
       force,
       buildMarketCacheKey('loadPlateMembers', { code })
     );
@@ -577,7 +577,7 @@ export async function loadSurgeLimitUp(force = false): Promise<SurgeLimitStock[]
     const data = await marketLoad<{ code?: number; data?: { items?: Array<Array<unknown>> } }>(
       url,
       TTL.seconds(45),
-      false,
+      true,
       force,
       buildMarketCacheKey('loadSurgeLimitUp')
     );
@@ -665,7 +665,7 @@ export async function loadStrong(force = false): Promise<MarketPayoffItem[]> {
         m_days_n_boards_days?: number;
         m_days_n_boards_boards?: number;
       }>;
-    }>(url, TTL.minutes(2), false, force, buildMarketCacheKey('loadStrong'));
+    }>(url, TTL.minutes(2), true, force, buildMarketCacheKey('loadStrong'));
     if (data.code !== 20000 || !data.data) return [];
     return data.data
       .filter((item) => {
@@ -706,7 +706,7 @@ export async function loadHot(force = false): Promise<MarketPayoffItem[]> {
           analyse_title?: string;
         }>;
       }>
-    >(url, TTL.minutes(2), false, force, buildMarketCacheKey('loadHot'));
+    >(url, TTL.minutes(2), true, force, buildMarketCacheKey('loadHot'));
     if (data.status_code !== 0 || !data.data?.stock_list) return [];
     return data.data.stock_list.slice(0, LIST_LIMIT).map((item) => {
       const change = item.rise_and_fall || 0;
@@ -743,7 +743,7 @@ export async function loadBigFace(days: string[], force = false): Promise<Market
       >(
         url,
         isLatestCandidate ? TTL.minutes(2) : TTL.hours(8),
-        !isLatestCandidate,
+        true,
         force,
         buildMarketCacheKey('loadBigFace', { date: dateStr, latest: isLatestCandidate })
       );
