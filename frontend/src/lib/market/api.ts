@@ -1,4 +1,4 @@
-import { buildMarketCacheKey, cached, TTL, mapBatches, marketGet, marketGetForce } from './client';
+import { buildMarketCacheKey, cached, TTL, mapBatches, marketEastmoneyGet, marketGet, marketGetForce } from './client';
 import { asNumber, formatAmount, formatAmountChange, formatChange, normalizeCode, normalizePlateName, yyyymmdd } from './format';
 import type { MarketPayoffItem, TurnoverMinutePoint, TurnoverSnapshot } from './types';
 import { api } from '../api';
@@ -431,28 +431,6 @@ export type PlateFlowHistoryPoint = {
   smallNetInflowRatio: number;
 };
 
-function parseJsonOrJsonp<T>(payload: unknown): T {
-  if (payload instanceof ArrayBuffer) {
-    const text = new TextDecoder('utf-8').decode(new Uint8Array(payload));
-    return parseJsonOrJsonp<T>(text);
-  }
-  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(payload)) {
-    const view = payload as ArrayBufferView;
-    const text = new TextDecoder('utf-8').decode(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
-    return parseJsonOrJsonp<T>(text);
-  }
-  if (payload && typeof payload === 'object') return payload as T;
-  const text = typeof payload === 'string' ? payload : String(payload ?? '');
-  const trimmed = text.trim();
-  if (trimmed.startsWith('{')) return JSON.parse(trimmed) as T;
-  const left = trimmed.indexOf('(');
-  const right = trimmed.lastIndexOf(')');
-  if (left === -1 || right === -1 || right <= left) {
-    throw new Error('invalid jsonp payload');
-  }
-  return JSON.parse(trimmed.slice(left + 1, right)) as T;
-}
-
 function parsePlateKlines(data: KlineResponse): PlateDayBar[] {
   return (data.data?.klines || [])
     .map((line) => {
@@ -501,43 +479,14 @@ function parsePlateFlowHistory(data: KlineResponse): PlateFlowHistoryPoint[] {
     .filter((point): point is PlateFlowHistoryPoint => point !== null);
 }
 
-function foxAgentRequest(url: string): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined' || typeof window.foxAgentCrossRequest !== 'function') {
-      reject(new Error('foxAgentCrossRequest unavailable'));
-      return;
-    }
-    window.foxAgentCrossRequest({
-      url,
-      method: 'GET',
-      success(body) {
-        resolve(body);
-      },
-      error(error) {
-        console.warn('[market] foxAgentCrossRequest error', error instanceof Error ? error.message : String(error));
-        reject(error instanceof Error ? error : new Error(typeof error === 'string' ? error : JSON.stringify(error)));
-      },
-    });
-  });
-}
-
 export async function loadPlateDayKline(code: string, limit = 12): Promise<PlateDayBar[]> {
   const secid = code.startsWith('90.') ? code : `90.${code}`;
   const baseQuery = `secid=${encodeURIComponent(secid)}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=${limit}`;
   const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?${baseQuery}&cb=__em`;
   const foxUrl = `https://push2his.eastmoney.com/api/qt/stock/kline/get?${baseQuery}`;
   try {
-    if (typeof window !== 'undefined' && typeof window.foxAgentCrossRequest === 'function') {
-      const payload = await foxAgentRequest(foxUrl);
-      return parsePlateKlines(parseJsonOrJsonp<KlineResponse>(payload));
-    }
-    console.info('[market] loadPlateDayKline fallback to marketGet', { code, secid, limit });
-    const data = await marketGet<KlineResponse>(
-      url,
-      TTL.minutes(5),
-      true,
-      buildMarketCacheKey('loadPlateDayKline', { code, limit })
-    );
+    const cacheKey = buildMarketCacheKey('loadPlateDayKline', { code, limit });
+    const data = await marketEastmoneyGet<KlineResponse>(url, TTL.minutes(5), true, cacheKey, { foxUrl });
     return parsePlateKlines(data);
   } catch (error) {
     console.warn('[market] loadPlateDayKline failed', {
@@ -556,17 +505,8 @@ export async function loadPlateFlowHistory(code: string, limit = 20, force = fal
   const url = `https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?${baseQuery}&cb=__em`;
   const foxUrl = `https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?${baseQuery}`;
   try {
-    if (typeof window !== 'undefined' && typeof window.foxAgentCrossRequest === 'function') {
-      const payload = await foxAgentRequest(foxUrl);
-      return parsePlateFlowHistory(parseJsonOrJsonp<KlineResponse>(payload));
-    }
-    const data = await marketLoad<KlineResponse>(
-      url,
-      TTL.minutes(10),
-      true,
-      force,
-      buildMarketCacheKey('loadPlateFlowHistory', { code, limit })
-    );
+    const cacheKey = buildMarketCacheKey('loadPlateFlowHistory', { code, limit });
+    const data = await marketEastmoneyGet<KlineResponse>(url, TTL.minutes(10), true, cacheKey, { force, foxUrl });
     return parsePlateFlowHistory(data);
   } catch (error) {
     console.warn('[market] loadPlateFlowHistory failed', {

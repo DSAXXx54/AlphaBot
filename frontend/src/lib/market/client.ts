@@ -206,44 +206,44 @@ function isEastmoney(url: string) {
   return /eastmoney\.com/i.test(url);
 }
 
-export function marketGet<T>(url: string, ttl = TTL.seconds(30), persist = false, key: string): Promise<T> {
-  return cached(key, ttl, persist, async () => {
-    if (isEastmoney(url)) {
-      try {
-        return await foxRequestJson<T>(url);
-      } catch {
-        return jsonp<T>(url);
-      }
-    }
-    try {
-      return await fetchJson<T>(url);
-    } catch {
-      return jsonp<T>(url);
-    }
-  });
+function requestWithFallback<T>(url: string): Promise<T> {
+  return fetchJson<T>(url).catch(() => jsonp<T>(url));
 }
 
-export function marketGetForce<T>(url: string, ttl = TTL.seconds(30), persist = false, key: string): Promise<T> {
+export function marketEastmoneyGet<T>(
+  url: string,
+  ttl = TTL.seconds(30),
+  persist = false,
+  key: string,
+  options?: { force?: boolean; foxUrl?: string }
+): Promise<T> {
   return cached(
     key,
     ttl,
     persist,
     async () => {
-      if (isEastmoney(url)) {
-        try {
-          return await foxRequestJson<T>(url);
-        } catch {
-          return jsonp<T>(url);
-        }
-      }
       try {
-        return await fetchJson<T>(url);
+        return await foxRequestJson<T>(options?.foxUrl || url);
       } catch {
         return jsonp<T>(url);
       }
     },
-    { force: true }
+    { force: options?.force === true }
   );
+}
+
+export function marketGet<T>(url: string, ttl = TTL.seconds(30), persist = false, key: string): Promise<T> {
+  if (isEastmoney(url)) {
+    return marketEastmoneyGet<T>(url, ttl, persist, key);
+  }
+  return cached(key, ttl, persist, () => requestWithFallback<T>(url));
+}
+
+export function marketGetForce<T>(url: string, ttl = TTL.seconds(30), persist = false, key: string): Promise<T> {
+  if (isEastmoney(url)) {
+    return marketEastmoneyGet<T>(url, ttl, persist, key, { force: true });
+  }
+  return cached(key, ttl, persist, () => requestWithFallback<T>(url), { force: true });
 }
 
 export async function clearMarketCache(pattern = ''): Promise<void> {
