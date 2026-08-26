@@ -12,6 +12,11 @@ export const EMPTY_SECTOR_TREND: MarketTrendPanelData = {
   latestDay: '',
   topics: [],
   stockTags: {},
+  sampleStats: {
+    baseCount: 0,
+    eventAddedCount: 0,
+    finalCount: 0,
+  },
 };
 
 function clampScore(value: number): number {

@@ -324,10 +324,23 @@ export async function loadTrendSnapshot(force = false): Promise<MarketTrendSnaps
     priorityPlateNames(latestZt),
     surge.flatMap((item) => item.plates)
   );
-  const plateUniverse = await loadPlateUniverse({ priorityNames, force });
+  const baseUniverse = await loadPlateUniverse({ force });
+  const plateUniverse =
+    priorityNames.length === 0 || priorityNames.every((name) => matchPlate(baseUniverse, name))
+      ? baseUniverse
+      : await loadPlateUniverse({ priorityNames, force });
+  const eventAddedCount = plateUniverse.filter((plate) => !baseUniverse.some((base) => base.code === plate.code)).length;
+  const trendData = buildSectorTrendData(latestDay, plateUniverse, latestZt, surge);
   return {
     turnover,
-    sectorTrend: buildSectorTrendData(latestDay, plateUniverse, latestZt, surge),
+    sectorTrend: {
+      ...trendData,
+      sampleStats: {
+        baseCount: baseUniverse.length,
+        eventAddedCount,
+        finalCount: trendData.topics.length,
+      },
+    },
     facts: trendFacts(turnover),
   };
 }
@@ -451,12 +464,16 @@ async function buildSnapshot(): Promise<MarketSnapshot> {
   snapshot.payoffLists.bigface = settledValue(bigFaceResult, []);
   snapshot.diagnostics.赚钱效应.facts = payoffFacts(snapshot.payoffLists);
 
-  snapshot.sectorTrend = buildSectorTrendData(
-    latestDay,
-    trendUniverse,
-    latestZt,
-    surge
-  );
+  const trendData = buildSectorTrendData(latestDay, trendUniverse, latestZt, surge);
+  const eventAddedCount = trendUniverse.filter((plate) => !plateUniverse.some((base) => base.code === plate.code)).length;
+  snapshot.sectorTrend = {
+    ...trendData,
+    sampleStats: {
+      baseCount: plateUniverse.length,
+      eventAddedCount,
+      finalCount: trendData.topics.length,
+    },
+  };
   snapshot.diagnostics.趋势.facts = trendFacts(turnover);
   return snapshot;
 }

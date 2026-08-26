@@ -240,45 +240,55 @@ export async function loadPlateUniverse(options?: {
   const sampleSize = options?.sampleSize ?? PLATE_SAMPLE_SIZE;
   const priorityNames = options?.priorityNames ?? [];
   const force = options?.force === true;
-  try {
-    const [flowData, changeData] = await Promise.all([
-      marketLoad<ClistResponse>(plateListUrl('f62', 1, sampleSize), TTL.seconds(20), false, force),
-      marketLoad<ClistResponse>(plateListUrl('f3', 1, sampleSize), TTL.seconds(20), false, force),
-    ]);
-    const merged = new Map<string, PlateFlow>();
-    [flowData, changeData].forEach((payload) => {
-      parsePlateList(payload).forEach((plate) => {
-        if (!plate.code) return;
-        if (!merged.has(plate.code)) merged.set(plate.code, plate);
-      });
+  const [flowResult, changeResult] = await Promise.allSettled([
+    marketLoad<ClistResponse>(plateListUrl('f62', 1, sampleSize), TTL.seconds(20), false, force),
+    marketLoad<ClistResponse>(plateListUrl('f3', 1, sampleSize), TTL.seconds(20), false, force),
+  ]);
+
+  const merged = new Map<string, PlateFlow>();
+  [flowResult, changeResult].forEach((result) => {
+    if (result.status !== 'fulfilled') return;
+    parsePlateList(result.value).forEach((plate) => {
+      if (!plate.code || merged.has(plate.code)) return;
+      merged.set(plate.code, plate);
     });
-    const missingPriorityNames = priorityNames.filter(
-      (name) => name && !Array.from(merged.values()).some((plate) => matchesPlateName(plate, name))
-    );
-    if (missingPriorityNames.length > 0) {
-      const codeMap = await loadIndustryPlateCodes();
-      const normalizedCodeMap = new Map<string, string>();
-      codeMap.forEach((code, name) => {
-        const key = plateLookupKey(name);
-        if (key && !normalizedCodeMap.has(key)) normalizedCodeMap.set(key, code);
-      });
-      const missingCodes = Array.from(
-        new Set(
-          missingPriorityNames
-            .map((name) => normalizedCodeMap.get(plateLookupKey(name)) || '')
-            .filter((code) => code && !merged.has(code))
-        )
-      );
-      const specificPlates = await loadSpecificPlates(missingCodes, force);
-      specificPlates.forEach((plate) => {
-        if (!plate.code || merged.has(plate.code)) return;
-        merged.set(plate.code, plate);
-      });
-    }
-    return Array.from(merged.values());
-  } catch {
+  });
+
+  if (merged.size === 0 && priorityNames.length === 0) {
     return [];
   }
+
+  const missingPriorityNames = priorityNames.filter(
+    (name) => name && !Array.from(merged.values()).some((plate) => matchesPlateName(plate, name))
+  );
+  if (missingPriorityNames.length === 0) {
+    return Array.from(merged.values());
+  }
+
+  try {
+    const codeMap = await loadIndustryPlateCodes();
+    const normalizedCodeMap = new Map<string, string>();
+    codeMap.forEach((code, name) => {
+      const key = plateLookupKey(name);
+      if (key && !normalizedCodeMap.has(key)) normalizedCodeMap.set(key, code);
+    });
+    const missingCodes = Array.from(
+      new Set(
+        missingPriorityNames
+          .map((name) => normalizedCodeMap.get(plateLookupKey(name)) || '')
+          .filter((code) => code && !merged.has(code))
+      )
+    );
+    const specificPlates = await loadSpecificPlates(missingCodes, force);
+    specificPlates.forEach((plate) => {
+      if (!plate.code || merged.has(plate.code)) return;
+      merged.set(plate.code, plate);
+    });
+  } catch {
+    // keep partially successful base universe
+  }
+
+  return Array.from(merged.values());
 }
 
 /** 合并流入/流出榜，供主线等板块名称匹配 */
@@ -531,10 +541,12 @@ export async function loadSurgeLimitUp(force = false): Promise<SurgeLimitStock[]
 }
 
 export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
-  const url = `https://push2.eastmoney.com/api/qt/simple/screen?fltt=2&invt=2&fields=f57,f58,f116&secids=${encodeURIComponent('m:90+t:3')}&cb=__em`;
+  const url = `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(
+    'm:90+t:3'
+  )}&fields=f12,f14&pn=1&pz=500&po=1&cb=__em`;
   const map = new Map<string, string>();
   try {
-    const data = await marketGet<{ data?: { diff?: Array<{ f57?: string; f58?: string }> | Record<string, { f57?: string; f58?: string }> } }>(
+    const data = await marketGet<{ data?: { diff?: Array<{ f12?: string; f14?: string }> | Record<string, { f12?: string; f14?: string }> } }>(
       url,
       TTL.hours(8),
       true
@@ -542,7 +554,7 @@ export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
     const diff = data?.data?.diff;
     const rows = Array.isArray(diff) ? diff : diff ? Object.values(diff) : [];
     rows.forEach((item) => {
-      if (item.f58 && item.f57) map.set(item.f58, item.f57);
+      if (item.f14 && item.f12) map.set(item.f14, item.f12);
     });
   } catch {
     // keep empty map

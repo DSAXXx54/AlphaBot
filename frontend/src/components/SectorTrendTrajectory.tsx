@@ -733,6 +733,13 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
             <div className="mt-1 max-w-[760px] text-xs leading-5 text-muted-foreground">
               1D/3D 对比已切到真实板块资金流时序。当前榜单先基于现有候选池重排活跃度 Top10，后续可再替换更完整母样本。
             </div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+              <span>基础样本 {data.sampleStats.baseCount}</span>
+              <span className="h-3 w-px bg-border/60" />
+              <span>事件补入 {data.sampleStats.eventAddedCount}</span>
+              <span className="h-3 w-px bg-border/60" />
+              <span>最终候选 {data.sampleStats.finalCount}</span>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
             {pulseSummary.map((item) => (

@@ -123,11 +123,18 @@ export type MarketTrendStockTag = {
   plate?: string;
 };
 
+export type MarketTrendSampleStats = {
+  baseCount: number;
+  eventAddedCount: number;
+  finalCount: number;
+};
+
 export type MarketTrendPanelData = {
   range: 10 | 20 | 60;
   latestDay: string;
   topics: MarketTrendTopic[];
   stockTags: Record<string, MarketTrendStockTag>;
+  sampleStats: MarketTrendSampleStats;
 };
 
 export type MarketSnapshot = {
@@ -163,5 +170,10 @@ export const DEFAULT_MARKET_SNAPSHOT: MarketSnapshot = {
     latestDay: '',
     topics: [],
     stockTags: {},
+    sampleStats: {
+      baseCount: 0,
+      eventAddedCount: 0,
+      finalCount: 0,
+    },
   },
 };
