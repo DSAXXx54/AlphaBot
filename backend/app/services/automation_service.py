@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Optional, Awaitable
 from sqlalchemy.orm import Session
 
 from app.channels.base import ChannelMessage
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.services.agent_service import AgentService
@@ -94,8 +95,14 @@ class AutomationService:
         return _slugify(f"{collection_slug}--{entry_slug}")
 
     @classmethod
-    def build_public_report_url(cls, collection_slug: str, entry_slug: str) -> str:
+    def build_public_report_path(cls, collection_slug: str, entry_slug: str) -> str:
         return f"/published/{collection_slug}/{entry_slug}"
+
+    @classmethod
+    def build_public_report_url(cls, collection_slug: str, entry_slug: str) -> str:
+        path = cls.build_public_report_path(collection_slug, entry_slug)
+        base_url = settings.APP_PUBLIC_BASE_URL.strip().rstrip("/")
+        return f"{base_url}{path}" if base_url else path
 
     @classmethod
     def ensure_unique_entry_slug(cls, collection_slug: str, entry_slug: str, now: datetime) -> str:
@@ -146,7 +153,7 @@ class AutomationService:
                     "entry_slug": entry_slug,
                     "title": payload.get("title"),
                     "published_at": published_at,
-                    "url": cls.build_public_report_url(collection_slug, entry_slug),
+                    "url": cls.build_public_report_path(collection_slug, entry_slug),
                 }
             )
 
@@ -386,7 +393,10 @@ class AutomationService:
                 progress_callback,
                 "completed",
                 "自动化任务已完成并发布。",
-                {"published_url": cls.build_public_report_url(collection_slug, entry_slug)},
+                {
+                    "published_path": cls.build_public_report_path(collection_slug, entry_slug),
+                    "published_url": cls.build_public_report_url(collection_slug, entry_slug),
+                },
             )
 
             notification_result = None
@@ -460,6 +470,7 @@ class AutomationService:
                 "collection_slug": collection_slug,
                 "entry_slug": entry_slug,
                 "published_slug": publish_slug,
+                "published_path": cls.build_public_report_path(collection_slug, entry_slug),
                 "published_url": cls.build_public_report_url(collection_slug, entry_slug),
                 "report_api_url": f"/api/v1/reports/collections/{collection_slug}/{entry_slug}",
                 "title": published["title"],

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # 应用信息
     APP_NAME: str = "AI Stock Assistant API"
     API_V1_STR: str = "/api/v1"
+    APP_PUBLIC_BASE_URL: str = os.getenv("APP_PUBLIC_BASE_URL", "")
     
     # 基础目录
     BASE_DIR: str = os.getenv("BASE_DIR", "./") 
