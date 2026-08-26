@@ -10,11 +10,15 @@ export const TTL = {
   days: (value: number) => value * 86_400_000,
 };
 
-export function cacheKey(url: string): string {
-  return url
-    .replace(/([?&])(_|cb|callback)=[^&]*/g, '$1')
-    .replace(/[?&]$/, '')
-    .replace(/\?&/, '?');
+export function buildMarketCacheKey(
+  resource: string,
+  params?: Record<string, string | number | boolean | null | undefined>
+): string {
+  const pairs = Object.entries(params || {})
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${String(value)}`);
+  return pairs.length > 0 ? `${resource}:${pairs.join(':')}` : resource;
 }
 
 function persistKey(key: string) {
@@ -192,8 +196,8 @@ function isEastmoney(url: string) {
   return /eastmoney\.com/i.test(url);
 }
 
-export function marketGet<T>(url: string, ttl = TTL.seconds(30), persist = false): Promise<T> {
-  return cached(cacheKey(url), ttl, persist, async () => {
+export function marketGet<T>(url: string, ttl = TTL.seconds(30), persist = false, key: string): Promise<T> {
+  return cached(key, ttl, persist, async () => {
     if (isEastmoney(url)) {
       try {
         return await foxRequestJson<T>(url);
@@ -209,9 +213,9 @@ export function marketGet<T>(url: string, ttl = TTL.seconds(30), persist = false
   });
 }
 
-export function marketGetForce<T>(url: string, ttl = TTL.seconds(30), persist = false): Promise<T> {
+export function marketGetForce<T>(url: string, ttl = TTL.seconds(30), persist = false, key: string): Promise<T> {
   return cached(
-    cacheKey(url),
+    key,
     ttl,
     persist,
     async () => {

@@ -1,4 +1,4 @@
-import { TTL, mapBatches, marketGet, marketGetForce } from './client';
+import { buildMarketCacheKey, TTL, mapBatches, marketGet, marketGetForce } from './client';
 import { asNumber, formatAmount, formatAmountChange, formatChange, normalizeCode, normalizePlateName, yyyymmdd } from './format';
 import type { MarketPayoffItem, TurnoverMinutePoint, TurnoverSnapshot } from './types';
 import { api } from '../api';
@@ -72,8 +72,8 @@ const EM_UT = '7eea3edcaed734bea9cbfc24409ed989';
 const LIST_LIMIT = 8;
 const PLATE_SAMPLE_SIZE = 10;
 
-function marketLoad<T>(url: string, ttl: number, persist = false, force = false): Promise<T> {
-  return force ? marketGetForce<T>(url, ttl, persist) : marketGet<T>(url, ttl, persist);
+function marketLoad<T>(url: string, ttl: number, persist = false, force = false, key: string): Promise<T> {
+  return force ? marketGetForce<T>(url, ttl, persist, key) : marketGet<T>(url, ttl, persist, key);
 }
 
 function clistDiff(payload: ClistResponse | null | undefined): ClistItem[] {
@@ -110,7 +110,13 @@ function poolUrl(type: TopicStock['type'], dateStr: string): string {
 async function loadPool(type: TopicStock['type'], dateStr: string, latest: boolean, force = false): Promise<TopicStock[]> {
   const ttl = latest ? TTL.seconds(20) : TTL.hours(8);
   try {
-    const data = await marketLoad<TopicPoolResponse>(poolUrl(type, dateStr), ttl, !latest, force);
+    const data = await marketLoad<TopicPoolResponse>(
+      poolUrl(type, dateStr),
+      ttl,
+      !latest,
+      force,
+      buildMarketCacheKey('loadTopicPool', { type, date: dateStr, latest })
+    );
     return (data?.data?.pool || []).map((item) => mapPool(type, item));
   } catch {
     return [];
@@ -138,7 +144,13 @@ export async function loadTradingDays(limit = 20, force = false): Promise<string
 export async function loadTurnover(force = false): Promise<TurnoverSnapshot | null> {
   const url = 'https://dq.10jqka.com.cn/fuyao/market_analysis_api/chart/v1/get_chart_data?chart_key=turnover_minute';
   try {
-    const json = await marketLoad<ThsEnvelope<TurnoverCharts>>(url, TTL.seconds(15), false, force);
+    const json = await marketLoad<ThsEnvelope<TurnoverCharts>>(
+      url,
+      TTL.seconds(15),
+      false,
+      force,
+      buildMarketCacheKey('loadTurnover')
+    );
     if (json.status_code !== 0 || !json.data) return null;
     const charts = json.data.charts ?? json.data;
     const pointList = charts.point_list || [];
@@ -208,7 +220,13 @@ function specificPlateUrl(codes: string[]) {
 async function loadSpecificPlates(codes: string[], force = false): Promise<PlateFlow[]> {
   if (codes.length === 0) return [];
   try {
-    const data = await marketLoad<ClistResponse>(specificPlateUrl(codes), TTL.minutes(2), false, force);
+    const data = await marketLoad<ClistResponse>(
+      specificPlateUrl(codes),
+      TTL.minutes(2),
+      false,
+      force,
+      buildMarketCacheKey('loadSpecificPlates', { codes: [...codes].sort().join(',') })
+    );
     return parsePlateList(data);
   } catch {
     return [];
@@ -218,8 +236,20 @@ async function loadSpecificPlates(codes: string[], force = false): Promise<Plate
 export async function loadPlateFlows(force = false): Promise<{ inflow: PlateFlow[]; outflow: PlateFlow[] }> {
   try {
     const [inData, outData] = await Promise.all([
-      marketLoad<ClistResponse>(plateListUrl('f62', 1), TTL.minutes(2), false, force),
-      marketLoad<ClistResponse>(plateListUrl('f62', 0), TTL.minutes(2), false, force),
+      marketLoad<ClistResponse>(
+        plateListUrl('f62', 1),
+        TTL.minutes(2),
+        false,
+        force,
+        buildMarketCacheKey('loadPlateFlows', { direction: 'inflow' })
+      ),
+      marketLoad<ClistResponse>(
+        plateListUrl('f62', 0),
+        TTL.minutes(2),
+        false,
+        force,
+        buildMarketCacheKey('loadPlateFlows', { direction: 'outflow' })
+      ),
     ]);
     return {
       inflow: parsePlateList(inData).slice(0, 5),
@@ -239,8 +269,20 @@ export async function loadPlateUniverse(options?: {
   const priorityNames = options?.priorityNames ?? [];
   const force = options?.force === true;
   const [flowResult, changeResult] = await Promise.allSettled([
-    marketLoad<ClistResponse>(plateListUrl('f62', 1, sampleSize), TTL.minutes(2), false, force),
-    marketLoad<ClistResponse>(plateListUrl('f3', 1, sampleSize), TTL.minutes(2), false, force),
+    marketLoad<ClistResponse>(
+      plateListUrl('f62', 1, sampleSize),
+      TTL.minutes(2),
+      false,
+      force,
+      buildMarketCacheKey('loadPlateUniverse', { metric: 'netFlow', sampleSize })
+    ),
+    marketLoad<ClistResponse>(
+      plateListUrl('f3', 1, sampleSize),
+      TTL.minutes(2),
+      false,
+      force,
+      buildMarketCacheKey('loadPlateUniverse', { metric: 'change', sampleSize })
+    ),
   ]);
 
   const merged = new Map<string, PlateFlow>();
@@ -334,7 +376,13 @@ export async function loadTopicPools(days: string[], force = false): Promise<{
 export async function loadPlateMembers(code: string, force = false): Promise<PlateMember[]> {
   const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=80&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${code}`)}&fields=f2,f3,f6,f8,f12,f14,f62&cb=__em`;
   try {
-    const data = await marketLoad<ClistResponse>(url, TTL.minutes(2), false, force);
+    const data = await marketLoad<ClistResponse>(
+      url,
+      TTL.minutes(2),
+      false,
+      force,
+      buildMarketCacheKey('loadPlateMembers', { code })
+    );
     return clistDiff(data)
       .filter((item) => item.f12)
       .map((item) => ({
@@ -476,7 +524,12 @@ export async function loadPlateDayKline(code: string, limit = 12): Promise<Plate
       return parsePlateKlines(parseJsonOrJsonp<KlineResponse>(payload));
     }
     console.info('[market] loadPlateDayKline fallback to marketGet', { code, secid, limit });
-    const data = await marketGet<KlineResponse>(url, TTL.minutes(5), true);
+    const data = await marketGet<KlineResponse>(
+      url,
+      TTL.minutes(5),
+      true,
+      buildMarketCacheKey('loadPlateDayKline', { code, limit })
+    );
     return parsePlateKlines(data);
   } catch (error) {
     console.warn('[market] loadPlateDayKline failed', {
@@ -499,7 +552,13 @@ export async function loadPlateFlowHistory(code: string, limit = 20, force = fal
       const payload = await foxAgentRequest(foxUrl);
       return parsePlateFlowHistory(parseJsonOrJsonp<KlineResponse>(payload));
     }
-    const data = await marketLoad<KlineResponse>(url, TTL.minutes(10), true, force);
+    const data = await marketLoad<KlineResponse>(
+      url,
+      TTL.minutes(10),
+      true,
+      force,
+      buildMarketCacheKey('loadPlateFlowHistory', { code, limit })
+    );
     return parsePlateFlowHistory(data);
   } catch (error) {
     console.warn('[market] loadPlateFlowHistory failed', {
@@ -515,7 +574,13 @@ export async function loadPlateFlowHistory(code: string, limit = 20, force = fal
 export async function loadSurgeLimitUp(force = false): Promise<SurgeLimitStock[]> {
   const url = `https://flash-api.xuangubao.com.cn/api/surge_stock/stocks?normal=true&uplimit=true&_=${Date.now()}`;
   try {
-    const data = await marketLoad<{ code?: number; data?: { items?: Array<Array<unknown>> } }>(url, TTL.seconds(45), false, force);
+    const data = await marketLoad<{ code?: number; data?: { items?: Array<Array<unknown>> } }>(
+      url,
+      TTL.seconds(45),
+      false,
+      force,
+      buildMarketCacheKey('loadSurgeLimitUp')
+    );
     if (data.code !== 20000 || !data.data?.items) return [];
     return data.data.items
       .map((item) => {
@@ -560,7 +625,7 @@ export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
     try {
       const data = await marketGet<{
         data?: { diff?: Array<{ f12?: string; f14?: string }> | Record<string, { f12?: string; f14?: string }> };
-      }>(url, TTL.hours(1), false);
+      }>(url, TTL.hours(1), false, buildMarketCacheKey('loadIndustryPlateCodesPage', { page, pageSize }));
       const diff = data?.data?.diff;
       const rows = Array.isArray(diff) ? diff : diff ? Object.values(diff) : [];
       rows.forEach((item) => {
@@ -600,7 +665,7 @@ export async function loadStrong(force = false): Promise<MarketPayoffItem[]> {
         m_days_n_boards_days?: number;
         m_days_n_boards_boards?: number;
       }>;
-    }>(url, TTL.minutes(2), false, force);
+    }>(url, TTL.minutes(2), false, force, buildMarketCacheKey('loadStrong'));
     if (data.code !== 20000 || !data.data) return [];
     return data.data
       .filter((item) => {
@@ -641,7 +706,7 @@ export async function loadHot(force = false): Promise<MarketPayoffItem[]> {
           analyse_title?: string;
         }>;
       }>
-    >(url, TTL.minutes(2), false, force);
+    >(url, TTL.minutes(2), false, force, buildMarketCacheKey('loadHot'));
     if (data.status_code !== 0 || !data.data?.stock_list) return [];
     return data.data.stock_list.slice(0, LIST_LIMIT).map((item) => {
       const change = item.rise_and_fall || 0;
@@ -675,7 +740,13 @@ export async function loadBigFace(days: string[], force = false): Promise<Market
             industry_block?: string;
           }>;
         }>
-      >(url, isLatestCandidate ? TTL.minutes(2) : TTL.hours(8), !isLatestCandidate, force);
+      >(
+        url,
+        isLatestCandidate ? TTL.minutes(2) : TTL.hours(8),
+        !isLatestCandidate,
+        force,
+        buildMarketCacheKey('loadBigFace', { date: dateStr, latest: isLatestCandidate })
+      );
       const rows = data.data?.stock_list?.filter((item) => !item.is_st) || [];
       if (rows.length === 0) continue;
       return rows
