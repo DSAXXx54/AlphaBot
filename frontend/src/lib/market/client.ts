@@ -50,7 +50,7 @@ async function deletePersisted(key: string) {
 export async function cached<T>(
   key: string,
   ttl: number,
-  _persist: boolean,
+  persist: boolean,
   loader: () => Promise<T>,
   options?: { force?: boolean }
 ): Promise<T> {
@@ -58,14 +58,16 @@ export async function cached<T>(
   if (force) {
     memory.delete(key);
     inflight.delete(key);
-    await deletePersisted(key);
+    if (persist) await deletePersisted(key);
   }
   const hit = memory.get(key);
   if (!force && hit && Date.now() - hit.at < hit.ttl) return hit.data as T;
-  const stored = await readPersisted<T>(key);
-  if (stored != null) {
-    memory.set(key, { at: Date.now(), ttl, data: stored });
-    return stored;
+  if (persist) {
+    const stored = await readPersisted<T>(key);
+    if (stored != null) {
+      memory.set(key, { at: Date.now(), ttl, data: stored });
+      return stored;
+    }
   }
   const pending = inflight.get(key);
   if (!force && pending) return pending as Promise<T>;
@@ -74,7 +76,7 @@ export async function cached<T>(
     .then(async (data) => {
       memory.set(key, { at: Date.now(), ttl, data });
       const empty = Array.isArray(data) && data.length === 0;
-      if (!empty) await writePersisted(key, ttl, data);
+      if (persist && !empty) await writePersisted(key, ttl, data);
       return data;
     })
     .finally(() => {

@@ -5,6 +5,7 @@ import { isoDate, matchPlate, normalizeCode, normalizePlateName } from './format
 const INFLOW_COLORS = ['#ff5a6f', '#5b8def', '#18b7d8', '#f59e0b', '#14b8a6'];
 const OUTFLOW_COLORS = ['#f7bfc5', '#c8d4f2', '#b9e8ee', '#f6d8ae', '#cfe9df'];
 const WEIGHTS = { change: 0.25, upRatio: 0.2, ztRatio: 0.25, amountChange: 0.1, netFlow: 0.2 };
+const CANDIDATE_LIMIT = 32;
 
 export const EMPTY_SECTOR_TREND: MarketTrendPanelData = {
   range: 20,
@@ -70,6 +71,23 @@ function highlightedStocksForPlate(plate: PlateFlow, ztList: TopicStock[]): Mark
     }));
 }
 
+function pickCandidatePlates(plates: PlateFlow[], ztList: TopicStock[], surge: SurgeLimitStock[]): PlateFlow[] {
+  const matched = new Map<string, PlateFlow>();
+  const push = (plate?: PlateFlow) => {
+    if (!plate?.code || matched.has(plate.code)) return;
+    matched.set(plate.code, plate);
+  };
+
+  ztList.forEach((stock) => push(matchPlate(plates, stock.reason || '')));
+  surge.forEach((stock) => stock.plates.forEach((name) => push(matchPlate(plates, name))));
+
+  const byFlow = [...plates].sort((a, b) => b.netFlow - a.netFlow || b.amount - a.amount).slice(0, 16);
+  const byChange = [...plates].sort((a, b) => b.change - a.change || b.netFlow - a.netFlow).slice(0, 16);
+
+  [...byFlow, ...byChange].forEach((plate) => push(plate));
+  return Array.from(matched.values()).slice(0, CANDIDATE_LIMIT);
+}
+
 function toTopic(
   plate: PlateFlow,
   index: number,
@@ -132,27 +150,32 @@ function buildStockTags(ztList: TopicStock[], surge: SurgeLimitStock[]): Record<
 
 export function buildSectorTrendData(
   latestDay: string,
-  inflowPlates: PlateFlow[],
-  outflowPlates: PlateFlow[],
+  plates: PlateFlow[],
   ztList: TopicStock[],
   surge: SurgeLimitStock[] = []
 ): MarketTrendPanelData {
-  const picked = [...inflowPlates, ...outflowPlates];
+  const picked = pickCandidatePlates(plates, ztList, surge);
   if (picked.length === 0) return EMPTY_SECTOR_TREND;
 
   const meanAmount = picked.reduce((sum, plate) => sum + plate.amount, 0) / picked.length || 1;
   const date = isoDate(latestDay);
-  const inflowTopics = inflowPlates.map((plate, index) =>
-    toTopic(plate, index, 'in', INFLOW_COLORS, date, meanAmount, ztList, surge)
-  );
-  const outflowTopics = outflowPlates.map((plate, index) =>
-    toTopic(plate, index, 'out', OUTFLOW_COLORS, date, meanAmount, ztList, surge)
+  const topics = picked.map((plate, index) =>
+    toTopic(
+      plate,
+      index,
+      plate.netFlow >= 0 ? 'in' : 'out',
+      plate.netFlow >= 0 ? INFLOW_COLORS : OUTFLOW_COLORS,
+      date,
+      meanAmount,
+      ztList,
+      surge
+    )
   );
 
   return {
     range: 20,
     latestDay: date,
-    topics: [...inflowTopics, ...outflowTopics].sort((a, b) => b.score - a.score || b.moneyFlow - a.moneyFlow),
+    topics: topics.sort((a, b) => b.score - a.score || b.moneyFlow - a.moneyFlow),
     stockTags: buildStockTags(ztList, surge),
   };
 }

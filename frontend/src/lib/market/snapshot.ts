@@ -1,4 +1,4 @@
-import { loadBigFace, loadHot, loadPlateFlows, loadPlates, loadStrong, loadSurgeLimitUp, loadTopicPools, loadTradingDays, loadTurnover, type TopicStock } from './api';
+import { loadBigFace, loadHot, loadPlateUniverse, loadPlates, loadStrong, loadSurgeLimitUp, loadTopicPools, loadTradingDays, loadTurnover, type TopicStock } from './api';
 import { clearMarketCache } from './client';
 import { formatPlateFlow, formatShortDate, matchPlate, normalizeCode } from './format';
 import { buildSectorTrendData } from './sectorTrend';
@@ -18,6 +18,29 @@ export type { MarketSnapshot } from './types';
 
 const MAINLINE_LIMIT = 3;
 const MAINLINE_FOLLOWERS = 8;
+const DEFAULT_EMOTION_DAYS = 5;
+const FULL_EMOTION_DAYS = 20;
+
+export type MarketEmotionSnapshot = {
+  emotionSeries: MarketEmotionPoint[];
+  facts: string[];
+};
+
+export type MarketTrendSnapshot = {
+  turnover: MarketSnapshot['turnover'];
+  sectorTrend: MarketSnapshot['sectorTrend'];
+  facts: string[];
+};
+
+export type MarketMainlineSnapshot = {
+  mainlineLanes: MarketMainlineLane[];
+  facts: string[];
+};
+
+export type MarketPayoffSnapshot = {
+  payoffLists: MarketSnapshot['payoffLists'];
+  facts: string[];
+};
 
 function joinNames(names: Array<string | undefined>, limit = 2): string {
   const values = names.filter((name): name is string => Boolean(name)).slice(0, limit);
@@ -194,6 +217,157 @@ function buildMainlineLanes(
 
 let inflight: Promise<MarketSnapshot> | null = null;
 
+function emotionFacts(series: MarketEmotionPoint[]): string[] {
+  const latest = series[series.length - 1];
+  if (!latest) return DEFAULT_MARKET_SNAPSHOT.diagnostics.情绪.facts;
+  return [
+    `最高板 ${joinNames(latest.maxNames, 2)} ${latest.maxHeight}板`,
+    `次高板 ${joinNames(latest.secondNames, 2)} ${latest.secondHeight}板`,
+    `最高板家数 ${latest.maxCount}只`,
+  ];
+}
+
+function trendFacts(turnover: MarketSnapshot['turnover']): string[] {
+  if (!turnover) return DEFAULT_MARKET_SNAPSHOT.diagnostics.趋势.facts;
+  return [
+    `当前成交 ${turnover.currentText}`,
+    `预估全天 ${turnover.predictText}`,
+    `较昨日 ${turnover.changeText}`,
+  ];
+}
+
+function mainlineFacts(lanes: MarketMainlineLane[]): string[] {
+  if (lanes.length === 0) return DEFAULT_MARKET_SNAPSHOT.diagnostics.主线.facts;
+  const top = lanes[0];
+  return [
+    `${top.name} 涨停${top.ztCount}只${top.maxHeight > 0 ? ` 最高${top.maxHeight}板` : ''}`,
+    `资金 ${lanes.slice(0, 2).map((lane) => `${lane.name} ${lane.value}`).join(' / ')}`,
+    `龙头股 ${top.leader?.name || '--'}`,
+  ];
+}
+
+function payoffFacts(payoffLists: MarketSnapshot['payoffLists']): string[] {
+  return [
+    `强势股 ${joinNames(payoffLists.strong.map((item) => item.name))}`,
+    `热榜股 ${joinNames(payoffLists.hot.map((item) => item.name))}`,
+    `大面代表 ${joinNames(payoffLists.bigface.map((item) => item.name))}`,
+  ];
+}
+
+function priorityPlateNames(...groups: TopicStock[][]): string[] {
+  const seen = new Set<string>();
+  groups.flat().forEach((stock) => {
+    const name = stock.reason?.trim();
+    if (!name || name === '其他' || seen.has(name)) return;
+    seen.add(name);
+  });
+  return Array.from(seen);
+}
+
+function appendPriorityNames(base: string[], extras: string[]): string[] {
+  const seen = new Set(base);
+  extras.forEach((name) => {
+    const value = name.trim();
+    if (!value || value === '其他' || seen.has(value)) return;
+    seen.add(value);
+    base.push(value);
+  });
+  return base;
+}
+
+async function buildEmotionSnapshot(limit: number, force = false): Promise<MarketEmotionSnapshot> {
+  const tradingDays = await loadTradingDays(limit, force);
+  const pools =
+    tradingDays.length > 0
+      ? await loadTopicPools(tradingDays, force)
+      : {
+          ztByDate: new Map<string, TopicStock[]>(),
+          zbByDate: new Map<string, TopicStock[]>(),
+          dtByDate: new Map<string, TopicStock[]>(),
+        };
+
+  const emotionSeries = tradingDays
+    .map((day, index) => {
+      const prev = index > 0 ? tradingDays[index - 1] : '';
+      const zt = pools.ztByDate.get(day) || [];
+      const geese = deriveGeese(prev ? pools.ztByDate.get(prev) || [] : [], zt, pools.zbByDate.get(day) || []);
+      return emotionFromZt(day, zt, geese);
+    })
+    .filter((item): item is MarketEmotionPoint => item !== null);
+
+  return {
+    emotionSeries,
+    facts: emotionFacts(emotionSeries),
+  };
+}
+
+export async function loadEmotionSnapshot(limit = FULL_EMOTION_DAYS, force = false): Promise<MarketEmotionSnapshot> {
+  return buildEmotionSnapshot(limit, force);
+}
+
+export async function loadTrendSnapshot(force = false): Promise<MarketTrendSnapshot> {
+  const tradingDays = await loadTradingDays(1, force);
+  const latestDay = tradingDays[tradingDays.length - 1] || '';
+  const [turnover, pools, surge] = await Promise.all([
+    loadTurnover(force),
+    latestDay
+      ? loadTopicPools([latestDay], force)
+      : Promise.resolve({
+          ztByDate: new Map<string, TopicStock[]>(),
+          zbByDate: new Map<string, TopicStock[]>(),
+          dtByDate: new Map<string, TopicStock[]>(),
+        }),
+    loadSurgeLimitUp(force),
+  ]);
+  const latestZt = latestDay ? pools.ztByDate.get(latestDay) || [] : [];
+  const priorityNames = appendPriorityNames(
+    priorityPlateNames(latestZt),
+    surge.flatMap((item) => item.plates)
+  );
+  const plateUniverse = await loadPlateUniverse({ priorityNames, force });
+  return {
+    turnover,
+    sectorTrend: buildSectorTrendData(latestDay, plateUniverse, latestZt, surge),
+    facts: trendFacts(turnover),
+  };
+}
+
+export async function loadMainlineSnapshot(force = false): Promise<MarketMainlineSnapshot> {
+  const tradingDays = await loadTradingDays(1, force);
+  const latestDay = tradingDays[tradingDays.length - 1] || '';
+  const pools =
+    latestDay
+      ? await loadTopicPools([latestDay], force)
+      : {
+          ztByDate: new Map<string, TopicStock[]>(),
+          zbByDate: new Map<string, TopicStock[]>(),
+          dtByDate: new Map<string, TopicStock[]>(),
+        };
+  const latestZt = latestDay ? pools.ztByDate.get(latestDay) || [] : [];
+  const latestZb = latestDay ? pools.zbByDate.get(latestDay) || [] : [];
+  const latestDt = latestDay ? pools.dtByDate.get(latestDay) || [] : [];
+  const plates = await loadPlateUniverse({ priorityNames: priorityPlateNames(latestZt, latestZb, latestDt), force });
+  const mainlineLanes = buildMainlineLanes(plates, latestZt, buildTopicFundMap(latestZt, latestZb, latestDt));
+  return {
+    mainlineLanes,
+    facts: mainlineFacts(mainlineLanes),
+  };
+}
+
+export async function loadPayoffSnapshot(force = false): Promise<MarketPayoffSnapshot> {
+  const tradingDays = await loadTradingDays(FULL_EMOTION_DAYS, force);
+  const [strong, hot, bigface] = await Promise.all([
+    loadStrong(force),
+    loadHot(force),
+    loadBigFace(tradingDays, force),
+  ]);
+  const payoffLists = { strong, hot, bigface };
+  return {
+    payoffLists,
+    facts: payoffFacts(payoffLists),
+  };
+}
+
 export async function loadMarketSnapshot(force = false): Promise<MarketSnapshot> {
   if (force) {
     await clearMarketCache();
@@ -208,14 +382,15 @@ export async function loadMarketSnapshot(force = false): Promise<MarketSnapshot>
 
 async function buildSnapshot(): Promise<MarketSnapshot> {
   const snapshot: MarketSnapshot = JSON.parse(JSON.stringify(DEFAULT_MARKET_SNAPSHOT));
-  const tradingDays = await loadTradingDays();
+  const tradingDays = await loadTradingDays(FULL_EMOTION_DAYS);
   const latestDay = tradingDays[tradingDays.length - 1] || '';
+  const emotionDays = tradingDays.slice(-DEFAULT_EMOTION_DAYS);
 
-  const [turnoverResult, plateFlowResult, poolResult, surgeResult, strongResult, hotResult, bigFaceResult] = await Promise.allSettled([
+  const [turnoverResult, plateUniverseResult, poolResult, surgeResult, strongResult, hotResult, bigFaceResult] = await Promise.allSettled([
     loadTurnover(),
-    loadPlateFlows(),
-    tradingDays.length > 0
-      ? loadTopicPools(tradingDays)
+    loadPlateUniverse({ priorityNames: [] }),
+    emotionDays.length > 0
+      ? loadTopicPools(emotionDays)
       : Promise.resolve({
           ztByDate: new Map<string, TopicStock[]>(),
           zbByDate: new Map<string, TopicStock[]>(),
@@ -242,56 +417,46 @@ async function buildSnapshot(): Promise<MarketSnapshot> {
     zbByDate: new Map<string, TopicStock[]>(),
     dtByDate: new Map<string, TopicStock[]>(),
   });
-  const plateFlows = settledValue(plateFlowResult, { inflow: [], outflow: [] });
+  const plateUniverse = settledValue(plateUniverseResult, []);
   const latestZt = pools.ztByDate.get(latestDay) || [];
   const latestZb = pools.zbByDate.get(latestDay) || [];
   const latestDt = pools.dtByDate.get(latestDay) || [];
-  const plates = [...plateFlows.inflow, ...plateFlows.outflow];
+  const surge = settledValue(surgeResult, []);
+  const priorityNames = appendPriorityNames(
+    priorityPlateNames(latestZt, latestZb, latestDt),
+    surge.flatMap((item) => item.plates)
+  );
+  const plates = plateUniverse.length > 0 ? plateUniverse : await loadPlateUniverse({ priorityNames });
+  const trendUniverse =
+    priorityNames.length === 0 || priorityNames.every((name) => matchPlate(plates, name))
+      ? plates
+      : await loadPlateUniverse({ priorityNames });
 
-  snapshot.emotionSeries = tradingDays
+  snapshot.emotionSeries = emotionDays
     .map((day, index) => {
-      const prev = index > 0 ? tradingDays[index - 1] : '';
+      const prev = index > 0 ? emotionDays[index - 1] : '';
       const zt = pools.ztByDate.get(day) || [];
       const geese = deriveGeese(prev ? pools.ztByDate.get(prev) || [] : [], zt, pools.zbByDate.get(day) || []);
       return emotionFromZt(day, zt, geese);
     })
     .filter((item): item is MarketEmotionPoint => item !== null);
-
-  const latest = snapshot.emotionSeries[snapshot.emotionSeries.length - 1];
-  if (latest) {
-    snapshot.diagnostics.情绪.facts = [
-      `最高板 ${joinNames(latest.maxNames, 2)} ${latest.maxHeight}板`,
-      `次高板 ${joinNames(latest.secondNames, 2)} ${latest.secondHeight}板`,
-      `最高板家数 ${latest.maxCount}只`,
-    ];
-  }
+  snapshot.diagnostics.情绪.facts = emotionFacts(snapshot.emotionSeries);
 
   const lanes = buildMainlineLanes(plates, latestZt, buildTopicFundMap(latestZt, latestZb, latestDt));
   snapshot.mainlineLanes = lanes;
-  if (lanes.length > 0) {
-    const top = lanes[0];
-    snapshot.diagnostics.主线.facts = [
-      `${top.name} 涨停${top.ztCount}只${top.maxHeight > 0 ? ` 最高${top.maxHeight}板` : ''}`,
-      `资金 ${lanes.slice(0, 2).map((lane) => `${lane.name} ${lane.value}`).join(' / ')}`,
-      `龙头股 ${top.leader?.name || '--'}`,
-    ];
-  }
+  snapshot.diagnostics.主线.facts = mainlineFacts(lanes);
 
   snapshot.payoffLists.strong = settledValue(strongResult, []);
   snapshot.payoffLists.hot = settledValue(hotResult, []);
   snapshot.payoffLists.bigface = settledValue(bigFaceResult, []);
-  snapshot.diagnostics.赚钱效应.facts = [
-    `强势股 ${joinNames(snapshot.payoffLists.strong.map((item) => item.name))}`,
-    `热榜股 ${joinNames(snapshot.payoffLists.hot.map((item) => item.name))}`,
-    `大面代表 ${joinNames(snapshot.payoffLists.bigface.map((item) => item.name))}`,
-  ];
+  snapshot.diagnostics.赚钱效应.facts = payoffFacts(snapshot.payoffLists);
 
   snapshot.sectorTrend = buildSectorTrendData(
     latestDay,
-    plateFlows.inflow,
-    plateFlows.outflow,
+    trendUniverse,
     latestZt,
-    settledValue(surgeResult, [])
+    surge
   );
+  snapshot.diagnostics.趋势.facts = trendFacts(turnover);
   return snapshot;
 }

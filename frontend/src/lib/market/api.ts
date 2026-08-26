@@ -1,5 +1,5 @@
-import { TTL, mapBatches, marketGet } from './client';
-import { asNumber, formatAmount, formatAmountChange, formatChange, normalizeCode, yyyymmdd } from './format';
+import { TTL, mapBatches, marketGet, marketGetForce } from './client';
+import { asNumber, formatAmount, formatAmountChange, formatChange, normalizeCode, normalizePlateName, yyyymmdd } from './format';
 import type { MarketPayoffItem, TurnoverMinutePoint, TurnoverSnapshot } from './types';
 
 export type PlateFlow = {
@@ -68,6 +68,11 @@ type TurnoverCharts = {
 
 const EM_UT = '7eea3edcaed734bea9cbfc24409ed989';
 const LIST_LIMIT = 8;
+const PLATE_SAMPLE_SIZE = 10;
+
+function marketLoad<T>(url: string, ttl: number, persist = false, force = false): Promise<T> {
+  return force ? marketGetForce<T>(url, ttl, persist) : marketGet<T>(url, ttl, persist);
+}
 
 function clistDiff(payload: ClistResponse | null | undefined): ClistItem[] {
   const diff = payload?.data?.diff;
@@ -100,21 +105,21 @@ function poolUrl(type: TopicStock['type'], dateStr: string): string {
   return `https://push2ex.eastmoney.com${path}?ut=${EM_UT}&dpt=wz.ztzt&Pageindex=0&Pagesize=500&sort=${encodeURIComponent(sort)}&date=${dateStr.replace(/-/g, '')}&cb=__em`;
 }
 
-async function loadPool(type: TopicStock['type'], dateStr: string, latest: boolean): Promise<TopicStock[]> {
+async function loadPool(type: TopicStock['type'], dateStr: string, latest: boolean, force = false): Promise<TopicStock[]> {
   const ttl = latest ? TTL.seconds(20) : TTL.hours(8);
   try {
-    const data = await marketGet<TopicPoolResponse>(poolUrl(type, dateStr), ttl, !latest);
+    const data = await marketLoad<TopicPoolResponse>(poolUrl(type, dateStr), ttl, !latest, force);
     return (data?.data?.pool || []).map((item) => mapPool(type, item));
   } catch {
     return [];
   }
 }
 
-export async function loadTradingDays(limit = 20): Promise<string[]> {
+export async function loadTradingDays(limit = 20, force = false): Promise<string[]> {
   const url =
     'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.000001&fields1=f1,f2,f3,f4,f5,f6&fields2=f51&klt=101&fqt=1&end=20500101&lmt=30&cb=__em';
   try {
-    const json = await marketGet<KlineResponse>(url, TTL.minutes(30), true);
+    const json = await marketLoad<KlineResponse>(url, TTL.minutes(30), true, force);
     const days = (json.data?.klines || [])
       .map((line) => line.slice(0, 10).replace(/-/g, ''))
       .filter((day) => /^\d{8}$/.test(day));
@@ -132,10 +137,10 @@ export async function loadTradingDays(limit = 20): Promise<string[]> {
   return days;
 }
 
-export async function loadTurnover(): Promise<TurnoverSnapshot | null> {
+export async function loadTurnover(force = false): Promise<TurnoverSnapshot | null> {
   const url = 'https://dq.10jqka.com.cn/fuyao/market_analysis_api/chart/v1/get_chart_data?chart_key=turnover_minute';
   try {
-    const json = await marketGet<ThsEnvelope<TurnoverCharts>>(url, TTL.seconds(15));
+    const json = await marketLoad<ThsEnvelope<TurnoverCharts>>(url, TTL.seconds(15), false, force);
     if (json.status_code !== 0 || !json.data) return null;
     const charts = json.data.charts ?? json.data;
     const pointList = charts.point_list || [];
@@ -168,8 +173,8 @@ export async function loadTurnover(): Promise<TurnoverSnapshot | null> {
   }
 }
 
-function plateListUrl(po: 0 | 1, pz = 100) {
-  return `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=f62&fs=${encodeURIComponent('m:90+t:3')}&fields=f2,f3,f6,f12,f14,f62,f104,f105,f106&pn=1&pz=${pz}&po=${po}&cb=__em`;
+function plateListUrl(fid: 'f62' | 'f3' | 'f6', po: 0 | 1, pz = 100) {
+  return `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=${fid}&fs=${encodeURIComponent('m:90+t:3')}&fields=f2,f3,f6,f12,f14,f62,f104,f105,f106&pn=1&pz=${pz}&po=${po}&cb=__em`;
 }
 
 function parsePlateList(payload: ClistResponse | null | undefined): PlateFlow[] {
@@ -187,11 +192,36 @@ function parsePlateList(payload: ClistResponse | null | undefined): PlateFlow[] 
     }));
 }
 
-export async function loadPlateFlows(): Promise<{ inflow: PlateFlow[]; outflow: PlateFlow[] }> {
+function plateLookupKey(name: string) {
+  return normalizePlateName(name || '');
+}
+
+function matchesPlateName(plate: PlateFlow, name: string) {
+  const key = plateLookupKey(name);
+  return key && plateLookupKey(plate.name) === key;
+}
+
+function specificPlateUrl(codes: string[]) {
+  return `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(
+    codes.map((code) => `b:${code}`).join(',')
+  )}&fields=f2,f3,f6,f12,f14,f62,f104,f105,f106&pn=1&pz=${Math.max(codes.length, 1)}&po=1&cb=__em`;
+}
+
+async function loadSpecificPlates(codes: string[], force = false): Promise<PlateFlow[]> {
+  if (codes.length === 0) return [];
+  try {
+    const data = await marketLoad<ClistResponse>(specificPlateUrl(codes), TTL.seconds(20), false, force);
+    return parsePlateList(data);
+  } catch {
+    return [];
+  }
+}
+
+export async function loadPlateFlows(force = false): Promise<{ inflow: PlateFlow[]; outflow: PlateFlow[] }> {
   try {
     const [inData, outData] = await Promise.all([
-      marketGet<ClistResponse>(plateListUrl(1), TTL.seconds(20)),
-      marketGet<ClistResponse>(plateListUrl(0), TTL.seconds(20)),
+      marketLoad<ClistResponse>(plateListUrl('f62', 1), TTL.seconds(20), false, force),
+      marketLoad<ClistResponse>(plateListUrl('f62', 0), TTL.seconds(20), false, force),
     ]);
     return {
       inflow: parsePlateList(inData).slice(0, 5),
@@ -202,8 +232,61 @@ export async function loadPlateFlows(): Promise<{ inflow: PlateFlow[]; outflow: 
   }
 }
 
+export async function loadPlateUniverse(options?: {
+  sampleSize?: number;
+  priorityNames?: string[];
+  force?: boolean;
+}): Promise<PlateFlow[]> {
+  const sampleSize = options?.sampleSize ?? PLATE_SAMPLE_SIZE;
+  const priorityNames = options?.priorityNames ?? [];
+  const force = options?.force === true;
+  try {
+    const [flowData, changeData] = await Promise.all([
+      marketLoad<ClistResponse>(plateListUrl('f62', 1, sampleSize), TTL.seconds(20), false, force),
+      marketLoad<ClistResponse>(plateListUrl('f3', 1, sampleSize), TTL.seconds(20), false, force),
+    ]);
+    const merged = new Map<string, PlateFlow>();
+    [flowData, changeData].forEach((payload) => {
+      parsePlateList(payload).forEach((plate) => {
+        if (!plate.code) return;
+        if (!merged.has(plate.code)) merged.set(plate.code, plate);
+      });
+    });
+    const missingPriorityNames = priorityNames.filter(
+      (name) => name && !Array.from(merged.values()).some((plate) => matchesPlateName(plate, name))
+    );
+    if (missingPriorityNames.length > 0) {
+      const codeMap = await loadIndustryPlateCodes();
+      const normalizedCodeMap = new Map<string, string>();
+      codeMap.forEach((code, name) => {
+        const key = plateLookupKey(name);
+        if (key && !normalizedCodeMap.has(key)) normalizedCodeMap.set(key, code);
+      });
+      const missingCodes = Array.from(
+        new Set(
+          missingPriorityNames
+            .map((name) => normalizedCodeMap.get(plateLookupKey(name)) || '')
+            .filter((code) => code && !merged.has(code))
+        )
+      );
+      const specificPlates = await loadSpecificPlates(missingCodes, force);
+      specificPlates.forEach((plate) => {
+        if (!plate.code || merged.has(plate.code)) return;
+        merged.set(plate.code, plate);
+      });
+    }
+    return Array.from(merged.values());
+  } catch {
+    return [];
+  }
+}
+
 /** 合并流入/流出榜，供主线等板块名称匹配 */
 export async function loadPlates(): Promise<PlateFlow[]> {
+  const universe = await loadPlateUniverse();
+  if (universe.length > 0) {
+    return [...universe].sort((a, b) => b.netFlow - a.netFlow || b.amount - a.amount || b.change - a.change);
+  }
   const { inflow, outflow } = await loadPlateFlows();
   const merged = new Map<string, PlateFlow>();
   [...inflow, ...outflow].forEach((plate) => {
@@ -212,7 +295,7 @@ export async function loadPlates(): Promise<PlateFlow[]> {
   return Array.from(merged.values()).sort((a, b) => b.netFlow - a.netFlow);
 }
 
-export async function loadTopicPools(days: string[]): Promise<{
+export async function loadTopicPools(days: string[], force = false): Promise<{
   ztByDate: Map<string, TopicStock[]>;
   zbByDate: Map<string, TopicStock[]>;
   dtByDate: Map<string, TopicStock[]>;
@@ -226,9 +309,9 @@ export async function loadTopicPools(days: string[]): Promise<{
   const rows = await mapBatches(days, 6, async (day) => {
     const latestDay = day === latest;
     const [zt, zb, dt] = await Promise.all([
-      loadPool('zt', day, latestDay),
-      loadPool('zb', day, latestDay),
-      latestDay ? loadPool('dt', day, true) : Promise.resolve([] as TopicStock[]),
+      loadPool('zt', day, latestDay, force),
+      loadPool('zb', day, latestDay, force),
+      latestDay ? loadPool('dt', day, true, force) : Promise.resolve([] as TopicStock[]),
     ]);
     return { day, zt, zb, dt };
   });
@@ -240,10 +323,10 @@ export async function loadTopicPools(days: string[]): Promise<{
   return { ztByDate, zbByDate, dtByDate };
 }
 
-export async function loadPlateMembers(code: string): Promise<PlateMember[]> {
+export async function loadPlateMembers(code: string, force = false): Promise<PlateMember[]> {
   const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=80&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(`b:${code}`)}&fields=f2,f3,f6,f8,f12,f14,f62&cb=__em`;
   try {
-    const data = await marketGet<ClistResponse>(url, TTL.seconds(30));
+    const data = await marketLoad<ClistResponse>(url, TTL.seconds(30), false, force);
     return clistDiff(data)
       .filter((item) => item.f12)
       .map((item) => ({
@@ -398,7 +481,7 @@ export async function loadPlateDayKline(code: string, limit = 12): Promise<Plate
   }
 }
 
-export async function loadPlateFlowHistory(code: string, limit = 20): Promise<PlateFlowHistoryPoint[]> {
+export async function loadPlateFlowHistory(code: string, limit = 20, force = false): Promise<PlateFlowHistoryPoint[]> {
   const secid = code.startsWith('90.') ? code : `90.${code}`;
   const baseQuery = `secid=${encodeURIComponent(secid)}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65&klt=101&lmt=${limit}&ut=b2884a393a59ad64002292a3e90d46a5`;
   const url = `https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?${baseQuery}&cb=__em`;
@@ -408,7 +491,7 @@ export async function loadPlateFlowHistory(code: string, limit = 20): Promise<Pl
       const payload = await foxAgentRequest(foxUrl);
       return parsePlateFlowHistory(parseJsonOrJsonp<KlineResponse>(payload));
     }
-    const data = await marketGet<KlineResponse>(url, TTL.minutes(10), true);
+    const data = await marketLoad<KlineResponse>(url, TTL.minutes(10), true, force);
     return parsePlateFlowHistory(data);
   } catch (error) {
     console.warn('[market] loadPlateFlowHistory failed', {
@@ -421,10 +504,10 @@ export async function loadPlateFlowHistory(code: string, limit = 20): Promise<Pl
   }
 }
 
-export async function loadSurgeLimitUp(): Promise<SurgeLimitStock[]> {
+export async function loadSurgeLimitUp(force = false): Promise<SurgeLimitStock[]> {
   const url = `https://flash-api.xuangubao.com.cn/api/surge_stock/stocks?normal=true&uplimit=true&_=${Date.now()}`;
   try {
-    const data = await marketGet<{ code?: number; data?: { items?: Array<Array<unknown>> } }>(url, TTL.seconds(30));
+    const data = await marketLoad<{ code?: number; data?: { items?: Array<Array<unknown>> } }>(url, TTL.seconds(30), false, force);
     if (data.code !== 20000 || !data.data?.items) return [];
     return data.data.items
       .map((item) => {
@@ -472,7 +555,7 @@ export async function searchPlateCodeByName(name: string): Promise<string | null
   return map.get(name) || null;
 }
 
-export async function loadStrong(): Promise<MarketPayoffItem[]> {
+export async function loadStrong(force = false): Promise<MarketPayoffItem[]> {
   const url = 'https://flash-api.xuangubao.com.cn/api/pool/detail?pool_name=super_stock';
   try {
     const data = await marketGet<{
@@ -484,7 +567,7 @@ export async function loadStrong(): Promise<MarketPayoffItem[]> {
         m_days_n_boards_days?: number;
         m_days_n_boards_boards?: number;
       }>;
-    }>(url, TTL.minutes(1));
+    }>(url, TTL.minutes(1), false, force);
     if (data.code !== 20000 || !data.data) return [];
     return data.data
       .filter((item) => {
@@ -512,7 +595,7 @@ export async function loadStrong(): Promise<MarketPayoffItem[]> {
   }
 }
 
-export async function loadHot(): Promise<MarketPayoffItem[]> {
+export async function loadHot(force = false): Promise<MarketPayoffItem[]> {
   const url = 'https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock?stock_type=a&type=hour&list_type=normal';
   try {
     const data = await marketGet<
@@ -525,7 +608,7 @@ export async function loadHot(): Promise<MarketPayoffItem[]> {
           analyse_title?: string;
         }>;
       }>
-    >(url, TTL.minutes(1));
+    >(url, TTL.minutes(1), false, force);
     if (data.status_code !== 0 || !data.data?.stock_list) return [];
     return data.data.stock_list.slice(0, LIST_LIMIT).map((item) => {
       const change = item.rise_and_fall || 0;
@@ -543,7 +626,7 @@ export async function loadHot(): Promise<MarketPayoffItem[]> {
   }
 }
 
-export async function loadBigFace(days: string[]): Promise<MarketPayoffItem[]> {
+export async function loadBigFace(days: string[], force = false): Promise<MarketPayoffItem[]> {
   const candidates = days.length > 0 ? days.slice(-3).reverse() : [yyyymmdd()];
   for (const dateStr of candidates) {
     const url = `https://data.10jqka.com.cn/mobileapi/hotspot_focus/stock_pool/v1/get_drawdown_stocks?date=${dateStr}&cate=limit_up&sort_field=max_drawdown&sort_dir=asc&page=1&size=200`;
@@ -558,7 +641,7 @@ export async function loadBigFace(days: string[]): Promise<MarketPayoffItem[]> {
             industry_block?: string;
           }>;
         }>
-      >(url, TTL.minutes(5), true);
+      >(url, TTL.minutes(5), true, force);
       const rows = data.data?.stock_list?.filter((item) => !item.is_st) || [];
       if (rows.length === 0) continue;
       return rows

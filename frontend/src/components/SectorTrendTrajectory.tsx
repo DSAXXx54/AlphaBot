@@ -390,6 +390,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
   const [sortBy, setSortBy] = useState<{ key: MemberSortKey; dir: 'asc' | 'desc' }>({ key: 'rank', dir: 'asc' });
   const [hover, setHover] = useState<{ topicId: string; pointIndex: number } | null>(null);
   const [detailHoverIndex, setDetailHoverIndex] = useState<number | null>(null);
+  const shouldForceAuxFetch = refreshToken > 0;
 
   useEffect(() => {
     if (topics.length === 0) {
@@ -414,32 +415,9 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
   }, [selectedId, viewMode]);
 
   useEffect(() => {
-    const missing = topics.filter((topic) => !histories[topic.id]).map((topic) => topic.id);
-    if (missing.length === 0) return;
-    let active = true;
-    Promise.all(missing.map((id) => loadPlateFlowHistory(id, data.range || 20)))
-      .then((results) => {
-        if (!active) return;
-        setHistories((current) => {
-          const next = { ...current };
-          missing.forEach((id, index) => {
-            const topic = topics.find((item) => item.id === id);
-            if (!topic) return;
-            next[id] = buildTopicHistory(results[index], topic);
-          });
-          return next;
-        });
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [data.range, histories, refreshToken, topics]);
-
-  useEffect(() => {
     if (!selectedId || membersById[selectedId]) return;
     let active = true;
-    loadPlateMembers(selectedId)
+    loadPlateMembers(selectedId, shouldForceAuxFetch)
       .then((members) => {
         if (!active) return;
         setMembersById((current) => ({
@@ -462,7 +440,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
     return () => {
       active = false;
     };
-  }, [data.stockTags, membersById, refreshToken, selectedId]);
+  }, [data.stockTags, membersById, refreshToken, selectedId, shouldForceAuxFetch]);
 
   const historiesWithRank = useMemo(() => {
     const byDate = new Map<string, Array<{ id: string; score: number; flow: number }>>();
@@ -556,9 +534,54 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
   );
 
   const activeTopicInsights = viewMode === 'today' ? todayTopicInsights : trendTopicInsights;
+  const historyTargetIds = useMemo(() => {
+    const ids = new Set(activeTopicInsights.map((item) => item.topic.id));
+    if (selectedId) ids.add(selectedId);
+    return Array.from(ids);
+  }, [activeTopicInsights, selectedId]);
   const selectedInsight = activeTopicInsights.find((item) => item.topic.id === selectedId) || activeTopicInsights[0] || null;
   const selectedTopic = selectedInsight?.topic || null;
   const activeHistory = selectedInsight?.points || [];
+
+  useEffect(() => {
+    const missing = historyTargetIds.filter((id) => !histories[id]);
+    if (missing.length === 0) return;
+    let active = true;
+    const ordered = [
+      ...(selectedId && missing.includes(selectedId) ? [selectedId] : []),
+      ...missing.filter((id) => id !== selectedId),
+    ];
+
+    const consumeBatch = async (batchIds: string[]) => {
+      const results = await Promise.all(batchIds.map((id) => loadPlateFlowHistory(id, data.range || 20, shouldForceAuxFetch)));
+      if (!active) return;
+      setHistories((current) => {
+        const next = { ...current };
+        batchIds.forEach((id, index) => {
+          const topic = topics.find((item) => item.id === id);
+          if (!topic) return;
+          next[id] = buildTopicHistory(results[index], topic);
+        });
+        return next;
+      });
+    };
+
+    (async () => {
+      try {
+        if (ordered.length > 0) {
+          await consumeBatch(ordered.slice(0, 1));
+        }
+        for (let index = 1; index < ordered.length; index += 3) {
+          await consumeBatch(ordered.slice(index, index + 3));
+        }
+      } catch {
+        // keep current history cache
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [data.range, histories, historyTargetIds, refreshToken, selectedId, shouldForceAuxFetch, topics]);
 
   const pulseSummary = useMemo(() => {
     const count = (state: SectorPulseState) => topicInsights.filter((item) => item.state === state).length;
@@ -609,6 +632,38 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
     () => (selectedTopic ? membersById[selectedTopic.id] || [] : []),
     [membersById, selectedTopic]
   );
+
+  const expansionMetrics = useMemo(() => {
+    const total = selectedMembers.length;
+    if (total === 0) {
+      return {
+        advancers: 0,
+        advPct: 0,
+        strongCount: 0,
+        positiveFlowCount: 0,
+        positiveFlowPct: 0,
+        coreAmountShare: 0,
+      };
+    }
+    const advancers = selectedMembers.filter((member) => member.changePercent > 0).length;
+    const strongCount = selectedMembers.filter((member) => member.changePercent >= 3).length;
+    const positiveFlowCount = selectedMembers.filter((member) => member.netFlow > 0).length;
+    const totalAmount = selectedMembers.reduce((sum, member) => sum + member.amount, 0) || 1;
+    const coreAmountShare =
+      selectedMembers
+        .slice()
+        .sort((a, b) => b.amount - a.amount)
+        .slice(0, 3)
+        .reduce((sum, member) => sum + member.amount, 0) / totalAmount;
+    return {
+      advancers,
+      advPct: (advancers / total) * 100,
+      strongCount,
+      positiveFlowCount,
+      positiveFlowPct: (positiveFlowCount / total) * 100,
+      coreAmountShare: coreAmountShare * 100,
+    };
+  }, [selectedMembers]);
 
   const structureRoles = useMemo(() => {
     if (!selectedTopic) return [] as StructureRole[];
@@ -1007,6 +1062,18 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
                             <div className="text-xs font-medium text-foreground">{row.count} 家</div>
                           </div>
                         ))}
+                        <div className="space-y-1 border-t border-border/50 pt-3 text-[11px] text-muted-foreground">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <span>上涨家数 {expansionMetrics.advancers} / {selectedMembers.length || '--'}</span>
+                            <span className="h-3 w-px bg-border/60" />
+                            <span>净流入为正 {expansionMetrics.positiveFlowCount} / {selectedMembers.length || '--'}</span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <span>涨幅超 3% {expansionMetrics.strongCount} 家</span>
+                            <span className="h-3 w-px bg-border/60" />
+                            <span>前三成交占比 {expansionMetrics.coreAmountShare.toFixed(0)}%</span>
+                          </div>
+                        </div>
                       </div>
                       <div className="max-h-[236px] overflow-y-auto pr-1">
                         <div className="grid gap-2">

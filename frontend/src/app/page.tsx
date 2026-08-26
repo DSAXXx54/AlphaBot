@@ -11,7 +11,14 @@ import dynamic from 'next/dynamic';
 import { useAccounts } from '@/lib/contexts/AccountContext';
 import { isTradingTime } from '@/lib/market/format';
 import { searchStocks } from '@/lib/api';
-import { DEFAULT_MARKET_SNAPSHOT, loadMarketSnapshot } from '@/lib/market/snapshot';
+import {
+  DEFAULT_MARKET_SNAPSHOT,
+  loadEmotionSnapshot,
+  loadMainlineSnapshot,
+  loadMarketSnapshot,
+  loadPayoffSnapshot,
+  loadTrendSnapshot,
+} from '@/lib/market/snapshot';
 import type { MarketCardLabel, MarketSnapshot } from '@/lib/market/types';
 import { isAuthRequiredView, loginUrl, parseHomeView } from '@/lib/authRedirect';
 
@@ -179,7 +186,7 @@ export default function Home() {
     }
   }, [isAuthenticated, isReady, viewMode]);
 
-  const refreshMarket = useCallback(async (labels: MarketCardLabel[] = MARKET_CARD_LABELS) => {
+  const refreshMarket = useCallback(async (labels: MarketCardLabel[] = MARKET_CARD_LABELS, force = true) => {
     setCardRefreshing((current) => {
       const next = { ...current };
       labels.forEach((label) => {
@@ -188,9 +195,68 @@ export default function Home() {
       return next;
     });
     try {
-      const snapshot = await loadMarketSnapshot(true);
-      setMarketSnapshot(snapshot);
-      if (labels.includes('趋势')) {
+      const results = await Promise.all(
+        labels.map(async (label) => {
+          if (label === '趋势') {
+            const trend = await loadTrendSnapshot(force);
+            return {
+              label,
+              apply: (current: MarketSnapshot): MarketSnapshot => ({
+                ...current,
+                turnover: trend.turnover,
+                sectorTrend: trend.sectorTrend,
+                diagnostics: {
+                  ...current.diagnostics,
+                  趋势: { facts: trend.facts },
+                },
+              }),
+            };
+          }
+          if (label === '情绪') {
+            const desiredEmotionDays = activeMarketCard === '情绪' && emotionOverviewMode === 'short' ? shortEmotionCycle : 5;
+            const emotion = await loadEmotionSnapshot(desiredEmotionDays, force);
+            return {
+              label,
+              apply: (current: MarketSnapshot): MarketSnapshot => ({
+                ...current,
+                emotionSeries: emotion.emotionSeries,
+                diagnostics: {
+                  ...current.diagnostics,
+                  情绪: { facts: emotion.facts },
+                },
+              }),
+            };
+          }
+          if (label === '主线') {
+            const mainline = await loadMainlineSnapshot(force);
+            return {
+              label,
+              apply: (current: MarketSnapshot): MarketSnapshot => ({
+                ...current,
+                mainlineLanes: mainline.mainlineLanes,
+                diagnostics: {
+                  ...current.diagnostics,
+                  主线: { facts: mainline.facts },
+                },
+              }),
+            };
+          }
+          const payoff = await loadPayoffSnapshot(force);
+          return {
+            label,
+            apply: (current: MarketSnapshot): MarketSnapshot => ({
+              ...current,
+              payoffLists: payoff.payoffLists,
+              diagnostics: {
+                ...current.diagnostics,
+                赚钱效应: { facts: payoff.facts },
+              },
+            }),
+          };
+        })
+      );
+      setMarketSnapshot((current) => results.reduce((next, result) => result.apply(next), current));
+      if (results.some((result) => result.label === '趋势')) {
         setTrendRefreshToken((current) => current + 1);
       }
     } catch (error: unknown) {
@@ -205,7 +271,7 @@ export default function Home() {
         return next;
       });
     }
-  }, []);
+  }, [activeMarketCard, emotionOverviewMode, shortEmotionCycle]);
 
   useEffect(() => {
     if (viewMode !== 'market' || !isAuthenticated) {
@@ -241,7 +307,7 @@ export default function Home() {
     }
 
     const timer = window.setInterval(() => {
-      if (isTradingTime()) refreshMarket(enabled);
+      if (isTradingTime()) refreshMarket(enabled, false);
     }, 30000);
 
     return () => window.clearInterval(timer);
@@ -257,6 +323,42 @@ export default function Home() {
       setSelectedEmotionDate(emotionSeries[emotionSeries.length - 1].fullDate);
     }
   }, [emotionSeries, selectedEmotionDate]);
+
+  useEffect(() => {
+    const desiredEmotionDays = emotionOverviewMode === 'short' ? shortEmotionCycle : 5;
+    if (
+      viewMode !== 'market' ||
+      !isAuthenticated ||
+      activeMarketCard !== '情绪' ||
+      emotionSeries.length >= desiredEmotionDays
+    ) {
+      return;
+    }
+
+    let active = true;
+    loadEmotionSnapshot(desiredEmotionDays)
+      .then((emotionSnapshot) => {
+        if (!active || emotionSnapshot.emotionSeries.length === 0) return;
+        setMarketSnapshot((current) => ({
+          ...current,
+          emotionSeries: emotionSnapshot.emotionSeries,
+          diagnostics: {
+            ...current.diagnostics,
+            情绪: {
+              ...current.diagnostics.情绪,
+              facts: emotionSnapshot.facts.length > 0 ? emotionSnapshot.facts : current.diagnostics.情绪.facts,
+            },
+          },
+        }));
+      })
+      .catch((error: unknown) => {
+        console.error('补加载情绪数据失败:', error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeMarketCard, emotionOverviewMode, emotionSeries.length, isAuthenticated, shortEmotionCycle, viewMode]);
 
   // 处理点击外部关闭菜单
   useEffect(() => {
