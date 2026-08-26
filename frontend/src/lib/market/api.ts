@@ -270,6 +270,20 @@ export type PlateDayBar = {
   amount: number;
 };
 
+export type PlateFlowHistoryPoint = {
+  date: string;
+  mainNetInflow: number;
+  mainNetInflowRatio: number;
+  superLargeNetInflow: number;
+  superLargeNetInflowRatio: number;
+  largeNetInflow: number;
+  largeNetInflowRatio: number;
+  midNetInflow: number;
+  midNetInflowRatio: number;
+  smallNetInflow: number;
+  smallNetInflowRatio: number;
+};
+
 function parseJsonOrJsonp<T>(payload: unknown): T {
   if (payload instanceof ArrayBuffer) {
     const text = new TextDecoder('utf-8').decode(new Uint8Array(payload));
@@ -317,6 +331,29 @@ function parsePlateKlines(data: KlineResponse): PlateDayBar[] {
     .filter((bar): bar is PlateDayBar => bar !== null);
 }
 
+function parsePlateFlowHistory(data: KlineResponse): PlateFlowHistoryPoint[] {
+  return (data.data?.klines || [])
+    .map((line) => {
+      const parts = line.split(',');
+      const date = (parts[0] || '').replace(/-/g, '');
+      if (!date || parts.length < 11) return null;
+      return {
+        date,
+        mainNetInflow: Number(parts[1]) / 1e8 || 0,
+        smallNetInflow: Number(parts[2]) / 1e8 || 0,
+        midNetInflow: Number(parts[3]) / 1e8 || 0,
+        largeNetInflow: Number(parts[4]) / 1e8 || 0,
+        superLargeNetInflow: Number(parts[5]) / 1e8 || 0,
+        mainNetInflowRatio: Number(parts[6]) || 0,
+        smallNetInflowRatio: Number(parts[7]) || 0,
+        midNetInflowRatio: Number(parts[8]) || 0,
+        largeNetInflowRatio: Number(parts[9]) || 0,
+        superLargeNetInflowRatio: Number(parts[10]) || 0,
+      };
+    })
+    .filter((point): point is PlateFlowHistoryPoint => point !== null);
+}
+
 function foxAgentRequest(url: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined' || typeof window.foxAgentCrossRequest !== 'function') {
@@ -352,6 +389,29 @@ export async function loadPlateDayKline(code: string, limit = 12): Promise<Plate
     return parsePlateKlines(data);
   } catch (error) {
     console.warn('[market] loadPlateDayKline failed', {
+      code,
+      secid,
+      limit,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+export async function loadPlateFlowHistory(code: string, limit = 20): Promise<PlateFlowHistoryPoint[]> {
+  const secid = code.startsWith('90.') ? code : `90.${code}`;
+  const baseQuery = `secid=${encodeURIComponent(secid)}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65&klt=101&lmt=${limit}&ut=b2884a393a59ad64002292a3e90d46a5`;
+  const url = `https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?${baseQuery}&cb=__em`;
+  const foxUrl = `https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?${baseQuery}`;
+  try {
+    if (typeof window !== 'undefined' && typeof window.foxAgentCrossRequest === 'function') {
+      const payload = await foxAgentRequest(foxUrl);
+      return parsePlateFlowHistory(parseJsonOrJsonp<KlineResponse>(payload));
+    }
+    const data = await marketGet<KlineResponse>(url, TTL.minutes(10), true);
+    return parsePlateFlowHistory(data);
+  } catch (error) {
+    console.warn('[market] loadPlateFlowHistory failed', {
       code,
       secid,
       limit,

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { loadPlateDayKline, loadPlateMembers, type PlateDayBar, type PlateMember } from '@/lib/market/api';
+import { loadPlateFlowHistory, loadPlateMembers, type PlateFlowHistoryPoint, type PlateMember } from '@/lib/market/api';
 import type { MarketTrendPanelData, MarketTrendStage, MarketTrendTopic } from '@/lib/market/types';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -32,11 +32,53 @@ type TopicHistoryPoint = {
   expmaValue: number;
   expmaDeltaPct: number;
   strengthScore: number;
-  pct: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
+  mainNetInflow: number;
+  mainNetInflowRatio: number;
+  superLargeNetInflow: number;
+  superLargeNetInflowRatio: number;
+  largeNetInflow: number;
+  largeNetInflowRatio: number;
+  midNetInflow: number;
+  midNetInflowRatio: number;
+  smallNetInflow: number;
+  smallNetInflowRatio: number;
+  rank: number;
+};
+
+type SectorPulseState = '加强' | '新启动' | '修复' | '分歧' | '退潮' | '冷却';
+
+type TopicInsight = {
+  topic: MarketTrendTopic;
+  points: TopicHistoryPoint[];
+  latest: TopicHistoryPoint;
+  state: SectorPulseState;
+  stateReason: string;
+  scoreDelta1d: number;
+  scoreDelta3d: number;
+  flowDelta1d: number;
+  flowDelta3d: number;
+  expmaDelta1d: number;
+  rankDelta3d: number;
+  latestRank: number;
+  breadthPct: number;
+  ztPct: number;
+  moneyFlowRank: number;
+  scoreRank: number;
+};
+
+type RankingViewMode = 'today' | 'trend';
+
+type StructureRole = {
+  role: '龙头' | '中军' | '补涨';
+  name: string;
+  note: string;
+  code?: string;
+};
+
+type LadderRow = {
+  label: string;
+  count: number;
+  width: number;
 };
 
 const SVG_WIDTH = 1000;
@@ -62,6 +104,24 @@ const FLOW_META = {
     badge: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-300',
   },
 } as const;
+
+const PULSE_STYLES: Record<SectorPulseState, string> = {
+  加强: 'bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-200',
+  新启动: 'bg-orange-50 text-orange-700 dark:bg-orange-950/30 dark:text-orange-200',
+  修复: 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-200',
+  分歧: 'bg-yellow-50 text-yellow-700 dark:bg-yellow-950/30 dark:text-yellow-200',
+  退潮: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200',
+  冷却: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-200',
+};
+
+const PULSE_COLORS: Record<SectorPulseState, string> = {
+  加强: '#e11d48',
+  新启动: '#f97316',
+  修复: '#f59e0b',
+  分歧: '#eab308',
+  退潮: '#10b981',
+  冷却: '#64748b',
+};
 
 function shortDate(value: string) {
   if (!value || value.length < 8) return value;
@@ -119,6 +179,13 @@ function stageForScore(score: number): MarketTrendStage {
   return '退潮';
 }
 
+function deltaFromTail(values: number[], offset: number) {
+  if (values.length === 0) return 0;
+  const latest = values[values.length - 1] || 0;
+  const previous = values[Math.max(0, values.length - 1 - offset)] ?? values[0] ?? 0;
+  return latest - previous;
+}
+
 function calcExpma(values: number[], period = 3) {
   if (values.length === 0) return [];
   const alpha = 2 / (period + 1);
@@ -147,47 +214,152 @@ function buildNumericTicks(min: number, max: number, count = 5) {
   return Array.from({ length: count }, (_, index) => min + ((max - min) * index) / (count - 1));
 }
 
-function buildTopicHistory(bars: PlateDayBar[], topic: MarketTrendTopic): TopicHistoryPoint[] {
-  if (bars.length === 0) {
-    return [
-      {
-        date: topic.date,
-        expmaValue: 0,
-        expmaDeltaPct: 0,
-        strengthScore: topic.score,
-        pct: topic.changePct,
-        open: 0,
-        high: 0,
-        low: 0,
-        close: 0,
-      },
-    ];
+function flowStrengthScore(point: PlateFlowHistoryPoint, scale: number) {
+  const amountComponent = Math.max(-1, Math.min(1, point.mainNetInflow / scale));
+  const ratioComponent = Math.max(-1, Math.min(1, point.mainNetInflowRatio / 8));
+  const bigOrderComponent = Math.max(-1, Math.min(1, (point.superLargeNetInflowRatio + point.largeNetInflowRatio) / 12));
+  const defensivePenalty = Math.max(-1, Math.min(1, (point.midNetInflowRatio + point.smallNetInflowRatio) / 18));
+  return Math.max(
+    0,
+    Math.min(100, 50 + amountComponent * 24 + ratioComponent * 16 + bigOrderComponent * 12 - defensivePenalty * 6)
+  );
+}
+
+function fallbackHistoryPoint(topic: MarketTrendTopic, rank: number): TopicHistoryPoint {
+  return {
+    date: topic.date,
+    expmaValue: topic.moneyFlow,
+    expmaDeltaPct: 0,
+    strengthScore: topic.score,
+    mainNetInflow: topic.moneyFlow,
+    mainNetInflowRatio: 0,
+    superLargeNetInflow: 0,
+    superLargeNetInflowRatio: 0,
+    largeNetInflow: 0,
+    largeNetInflowRatio: 0,
+    midNetInflow: 0,
+    midNetInflowRatio: 0,
+    smallNetInflow: 0,
+    smallNetInflowRatio: 0,
+    rank,
+  };
+}
+
+function buildTopicHistory(flowPoints: PlateFlowHistoryPoint[], topic: MarketTrendTopic): TopicHistoryPoint[] {
+  if (flowPoints.length === 0) return [fallbackHistoryPoint(topic, 0)];
+
+  const scale = Math.max(
+    3,
+    Math.abs(topic.moneyFlow),
+    ...flowPoints.map((point) => Math.abs(point.mainNetInflow))
+  );
+  const expma = calcExpma(flowPoints.map((point) => point.mainNetInflow), 3);
+
+  return flowPoints.map((point, index) => ({
+    date: `${point.date.slice(0, 4)}-${point.date.slice(4, 6)}-${point.date.slice(6, 8)}`,
+    expmaValue: expma[index] || point.mainNetInflow || 0,
+    expmaDeltaPct: ((expma[index] || point.mainNetInflow || 0) / scale) * 100,
+    strengthScore: flowStrengthScore(point, scale),
+    mainNetInflow: point.mainNetInflow,
+    mainNetInflowRatio: point.mainNetInflowRatio,
+    superLargeNetInflow: point.superLargeNetInflow,
+    superLargeNetInflowRatio: point.superLargeNetInflowRatio,
+    largeNetInflow: point.largeNetInflow,
+    largeNetInflowRatio: point.largeNetInflowRatio,
+    midNetInflow: point.midNetInflow,
+    midNetInflowRatio: point.midNetInflowRatio,
+    smallNetInflow: point.smallNetInflow,
+    smallNetInflowRatio: point.smallNetInflowRatio,
+    rank: 0,
+  }));
+}
+
+function rankDeltaFromTail(points: TopicHistoryPoint[], offset: number) {
+  const latest = points[points.length - 1]?.rank;
+  const previous = points[Math.max(0, points.length - 1 - offset)]?.rank;
+  if (!latest || !previous) return 0;
+  return previous - latest;
+}
+
+function classifyPulse(topic: MarketTrendTopic, points: TopicHistoryPoint[]) {
+  const scores = points.map((point) => point.strengthScore);
+  const expma = points.map((point) => point.expmaDeltaPct);
+  const flows = points.map((point) => point.mainNetInflow);
+  const latestScore = scores[scores.length - 1] ?? topic.score;
+  const scoreDelta1d = deltaFromTail(scores, 1);
+  const scoreDelta3d = deltaFromTail(scores, 3);
+  const flowDelta1d = deltaFromTail(flows, 1);
+  const flowDelta3d = deltaFromTail(flows, 3);
+  const expmaDelta1d = deltaFromTail(expma, 1);
+  const latestRatio = points[points.length - 1]?.mainNetInflowRatio ?? 0;
+  const latestRank = points[points.length - 1]?.rank ?? 0;
+  const rankDelta3d = rankDeltaFromTail(points, 3);
+
+  if (latestScore >= 72 && scoreDelta3d >= 8 && flowDelta3d >= 0 && latestRatio >= 0) {
+    return { state: '加强' as const, stateReason: '主力净流入与净占比同步走强，趋势仍在抬升', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
   }
-  const closes = bars.map((bar) => bar.close);
-  const expma = calcExpma(closes, 3);
-  const baseline = expma.reduce((sum, value) => sum + value, 0) / Math.max(expma.length, 1);
-  return bars.map((bar, index) => {
-    const expmaValue = expma[index] || bar.close || 0;
-    const expmaDeltaPct = baseline > 0 ? ((expmaValue - baseline) / baseline) * 100 : 0;
-    const strengthScore = Math.max(0, Math.min(100, 50 + bar.pct * 4));
-    return {
-      date: `${bar.date.slice(0, 4)}-${bar.date.slice(4, 6)}-${bar.date.slice(6, 8)}`,
-      expmaValue,
-      expmaDeltaPct,
-      strengthScore,
-      pct: bar.pct,
-      open: bar.open,
-      high: bar.high,
-      low: bar.low,
-      close: bar.close,
-    };
-  });
+  if (latestScore >= 58 && rankDelta3d >= 3 && flowDelta3d > 0) {
+    return { state: '新启动' as const, stateReason: '近几日主力排名快速抬升，具备资金新启动特征', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
+  }
+  if (scoreDelta3d > 0 && flowDelta3d > 0 && latestRatio > 0 && latestScore < 72) {
+    return { state: '修复' as const, stateReason: '资金重新回流，但强度中枢仍低于主升区', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
+  }
+  if (latestScore >= 50 && (scoreDelta1d < 0 || flowDelta1d < 0 || expmaDelta1d < 0) && latestRatio > -1.5) {
+    return { state: '分歧' as const, stateReason: '板块仍有活跃度，但主力净流入开始放缓', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
+  }
+  if (scoreDelta3d <= -8 || flowDelta3d < 0 || latestRatio < -2) {
+    return { state: '退潮' as const, stateReason: '真实资金流持续走弱，排名与强度中枢下移', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
+  }
+  return { state: '冷却' as const, stateReason: '当前缺少持续强化信号，资金尚未形成明确方向', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
 }
 
 function linePath(points: TopicHistoryPoint[], yForExpma: (value: number) => number) {
   return points
     .map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(index, points.length).toFixed(1)} ${yForExpma(point.expmaDeltaPct).toFixed(1)}`)
     .join(' ');
+}
+
+function rankChip(delta: number) {
+  if (delta > 0) return `较3日 +${delta}`;
+  if (delta < 0) return `较3日 ${delta}`;
+  return '较3日 持平';
+}
+
+function buildStateNote(point: TopicHistoryPoint, previous?: TopicHistoryPoint | null) {
+  const flowDelta = point.mainNetInflow - (previous?.mainNetInflow ?? point.mainNetInflow);
+  if (point.mainNetInflowRatio >= 0 && flowDelta > 0) return '主力回流加速，板块承接增强。';
+  if (point.mainNetInflowRatio >= 0 && flowDelta <= 0) return '资金仍偏正，但边际增量开始放缓。';
+  if (point.mainNetInflowRatio < 0 && flowDelta > 0) return '抛压尚在缓解，处于修复观察阶段。';
+  return '资金分歧偏大，更多在核心股间博弈。';
+}
+
+function buildLadderRows(stockTags: Record<string, MarketTrendPanelData['stockTags'][string]>, members: TrendMember[]): LadderRow[] {
+  const counts = new Map<string, number>([
+    ['6板+', 0],
+    ['5板', 0],
+    ['4板', 0],
+    ['3板', 0],
+    ['2板', 0],
+    ['首板', 0],
+  ]);
+
+  members.forEach((member) => {
+    const lbc = stockTags[member.code]?.lbc;
+    if (!lbc) return;
+    if (lbc >= 6) counts.set('6板+', (counts.get('6板+') || 0) + 1);
+    else if (lbc === 5) counts.set('5板', (counts.get('5板') || 0) + 1);
+    else if (lbc === 4) counts.set('4板', (counts.get('4板') || 0) + 1);
+    else if (lbc === 3) counts.set('3板', (counts.get('3板') || 0) + 1);
+    else if (lbc === 2) counts.set('2板', (counts.get('2板') || 0) + 1);
+    else counts.set('首板', (counts.get('首板') || 0) + 1);
+  });
+
+  const maxCount = Math.max(...Array.from(counts.values()), 1);
+  return Array.from(counts.entries()).map(([label, count]) => ({
+    label,
+    count,
+    width: Math.max(count > 0 ? 18 : 8, Math.round((count / maxCount) * 100)),
+  }));
 }
 
 function endLabelPosition(index: number, values: Array<{ id: string; y: number }>) {
@@ -212,10 +384,12 @@ function endLabelPosition(index: number, values: Array<{ id: string; y: number }
 export default function SectorTrendTrajectory({ data, onSelectStock, refreshToken = 0 }: SectorTrendTrajectoryProps) {
   const topics = useMemo(() => data.topics || [], [data.topics]);
   const [selectedId, setSelectedId] = useState<string | null>(topics[0]?.id ?? null);
+  const [viewMode, setViewMode] = useState<RankingViewMode>('today');
   const [histories, setHistories] = useState<Record<string, TopicHistoryPoint[]>>({});
   const [membersById, setMembersById] = useState<Record<string, TrendMember[]>>({});
   const [sortBy, setSortBy] = useState<{ key: MemberSortKey; dir: 'asc' | 'desc' }>({ key: 'rank', dir: 'asc' });
   const [hover, setHover] = useState<{ topicId: string; pointIndex: number } | null>(null);
+  const [detailHoverIndex, setDetailHoverIndex] = useState<number | null>(null);
 
   useEffect(() => {
     if (topics.length === 0) {
@@ -232,13 +406,18 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
     setHistories({});
     setMembersById({});
     setHover(null);
+    setDetailHoverIndex(null);
   }, [refreshToken]);
+
+  useEffect(() => {
+    setDetailHoverIndex(null);
+  }, [selectedId, viewMode]);
 
   useEffect(() => {
     const missing = topics.filter((topic) => !histories[topic.id]).map((topic) => topic.id);
     if (missing.length === 0) return;
     let active = true;
-    Promise.all(missing.map((id) => loadPlateDayKline(id, data.range || 20)))
+    Promise.all(missing.map((id) => loadPlateFlowHistory(id, data.range || 20)))
       .then((results) => {
         if (!active) return;
         setHistories((current) => {
@@ -285,45 +464,119 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
     };
   }, [data.stockTags, membersById, refreshToken, selectedId]);
 
-  const selectedTopic = topics.find((topic) => topic.id === selectedId) || topics[0] || null;
-  const activeHistory = selectedTopic
-    ? histories[selectedTopic.id] || [
-        {
-          date: selectedTopic.date,
-          expmaValue: 0,
-          expmaDeltaPct: 0,
-          strengthScore: selectedTopic.score,
-          pct: selectedTopic.changePct,
-          open: 0,
-          high: 0,
-          low: 0,
-          close: 0,
-        },
-      ]
-    : [];
-  const inflowTopics = topics.filter((topic) => topic.flow === 'in');
-  const outflowTopics = topics.filter((topic) => topic.flow === 'out');
+  const historiesWithRank = useMemo(() => {
+    const byDate = new Map<string, Array<{ id: string; score: number; flow: number }>>();
+    Object.entries(histories).forEach(([topicId, points]) => {
+      points.forEach((point) => {
+        const rows = byDate.get(point.date) || [];
+        rows.push({ id: topicId, score: point.strengthScore, flow: point.mainNetInflow });
+        byDate.set(point.date, rows);
+      });
+    });
+
+    const rankMap = new Map<string, Map<string, number>>();
+    byDate.forEach((rows, date) => {
+      const ranked = [...rows].sort((a, b) => b.score - a.score || b.flow - a.flow);
+      rankMap.set(date, new Map(ranked.map((row, index) => [row.id, index + 1])));
+    });
+
+    return Object.fromEntries(
+      topics.map((topic, topicIndex) => {
+        const basePoints = histories[topic.id] || [fallbackHistoryPoint(topic, topicIndex + 1)];
+        return [
+          topic.id,
+          basePoints.map((point) => ({
+            ...point,
+            rank: rankMap.get(point.date)?.get(topic.id) || point.rank || topicIndex + 1,
+          })),
+        ];
+      })
+    ) as Record<string, TopicHistoryPoint[]>;
+  }, [histories, topics]);
+
+  const topicInsights = useMemo(() => {
+    const scoreRankMap = new Map(
+      [...topics]
+        .sort((a, b) => b.score - a.score || b.moneyFlow - a.moneyFlow)
+        .map((topic, index) => [topic.id, index + 1])
+    );
+    const flowRankMap = new Map(
+      [...topics]
+        .sort((a, b) => b.moneyFlow - a.moneyFlow || b.score - a.score)
+        .map((topic, index) => [topic.id, index + 1])
+    );
+
+    return topics
+      .map((topic, index) => {
+        const points = historiesWithRank[topic.id] || [fallbackHistoryPoint(topic, index + 1)];
+        const latest = points[points.length - 1] || points[0];
+        const pulse = classifyPulse(topic, points);
+        return {
+          topic,
+          points,
+          latest,
+          state: pulse.state,
+          stateReason: pulse.stateReason,
+          scoreDelta1d: pulse.scoreDelta1d,
+          scoreDelta3d: pulse.scoreDelta3d,
+          flowDelta1d: pulse.flowDelta1d,
+          flowDelta3d: pulse.flowDelta3d,
+          expmaDelta1d: pulse.expmaDelta1d,
+          rankDelta3d: pulse.rankDelta3d,
+          latestRank: pulse.latestRank || latest.rank || index + 1,
+          breadthPct: topic.breadth * 100,
+          ztPct: topic.ztRatio * 100,
+          moneyFlowRank: flowRankMap.get(topic.id) || topics.length,
+          scoreRank: scoreRankMap.get(topic.id) || topics.length,
+        } satisfies TopicInsight;
+      })
+      .sort((a, b) => b.topic.score - a.topic.score || b.scoreDelta3d - a.scoreDelta3d);
+  }, [historiesWithRank, topics]);
+
+  const todayTopicInsights = useMemo(
+    () =>
+      [...topicInsights]
+        .sort((a, b) => b.topic.score - a.topic.score || b.topic.moneyFlow - a.topic.moneyFlow || b.latest.strengthScore - a.latest.strengthScore)
+        .slice(0, 10),
+    [topicInsights]
+  );
+
+  const trendTopicInsights = useMemo(
+    () =>
+      [...topicInsights]
+        .sort(
+          (a, b) =>
+            b.scoreDelta3d - a.scoreDelta3d ||
+            b.flowDelta3d - a.flowDelta3d ||
+            b.rankDelta3d - a.rankDelta3d ||
+            b.latest.strengthScore - a.latest.strengthScore
+        )
+        .slice(0, 10),
+    [topicInsights]
+  );
+
+  const activeTopicInsights = viewMode === 'today' ? todayTopicInsights : trendTopicInsights;
+  const selectedInsight = activeTopicInsights.find((item) => item.topic.id === selectedId) || activeTopicInsights[0] || null;
+  const selectedTopic = selectedInsight?.topic || null;
+  const activeHistory = selectedInsight?.points || [];
+
+  const pulseSummary = useMemo(() => {
+    const count = (state: SectorPulseState) => topicInsights.filter((item) => item.state === state).length;
+    return [
+      { label: '连续强势', value: count('加强'), note: '真实资金强度与趋势继续抬升' },
+      { label: '新启动', value: count('新启动'), note: '近几日历史排名快速抬升' },
+      { label: '修复中', value: count('修复'), note: '分歧后主力资金重新回流' },
+      { label: '分歧/退潮', value: count('分歧') + count('退潮'), note: '资金斜率转弱，需要观察承接' },
+    ];
+  }, [topicInsights]);
 
   const chartTopics = useMemo(
     () =>
-      topics.map((topic) => ({
-        topic,
-        points:
-          histories[topic.id] || [
-            {
-              date: topic.date,
-              expmaValue: 0,
-              expmaDeltaPct: 0,
-              strengthScore: topic.score,
-              pct: topic.changePct,
-              open: 0,
-              high: 0,
-              low: 0,
-              close: 0,
-            },
-          ],
+      activeTopicInsights.map((item, index) => ({
+        topic: item.topic,
+        points: historiesWithRank[item.topic.id] || [fallbackHistoryPoint(item.topic, index + 1)],
       })),
-    [histories, topics]
+    [activeTopicInsights, historiesWithRank]
   );
 
   const expmaDomain = useMemo(() => buildExpmaDomain(chartTopics.map((item) => item.points)), [chartTopics]);
@@ -331,11 +584,11 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
   const yForExpma = (value: number) => {
     const plotHeight = SVG_HEIGHT - PAD.top - PAD.bottom;
     const safeValue = Number.isFinite(value) ? value : expmaDomain.min;
-    return PAD.top + ((expmaDomain.max - safeValue) / (expmaDomain.max - expmaDomain.min)) * plotHeight;
+    const range = expmaDomain.max - expmaDomain.min || 1;
+    return PAD.top + ((expmaDomain.max - safeValue) / range) * plotHeight;
   };
 
   const xLabels = activeHistory.map((point) => point.date);
-
   const endPoints = chartTopics.map(({ topic, points }) => ({
     id: topic.id,
     y: yForExpma(points[points.length - 1]?.expmaDeltaPct ?? 0),
@@ -351,6 +604,55 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
     });
     return values;
   }, [membersById, selectedId, sortBy]);
+
+  const selectedMembers = useMemo(
+    () => (selectedTopic ? membersById[selectedTopic.id] || [] : []),
+    [membersById, selectedTopic]
+  );
+
+  const structureRoles = useMemo(() => {
+    if (!selectedTopic) return [] as StructureRole[];
+    const topAmountMember = [...selectedMembers].sort((a, b) => b.amount - a.amount || b.netFlow - a.netFlow)[0];
+    const topMomentumMember = [...selectedMembers].sort((a, b) => b.changePercent - a.changePercent || b.netFlow - a.netFlow)[0];
+    const highlighted = [...selectedTopic.highlightedStocks].sort((a, b) => b.lbc - a.lbc);
+    const leader = highlighted[0];
+    const follower = highlighted.find((item) => item.code !== leader?.code) || topMomentumMember;
+
+    const roles: StructureRole[] = [];
+    if (leader) {
+      roles.push({
+        role: '龙头',
+        name: leader.name,
+        code: leader.code,
+        note: `${boardHeightLabel(leader.lbc)}，打开板块高度，情绪锚点最明确`,
+      });
+    }
+    if (topAmountMember) {
+      roles.push({
+        role: '中军',
+        name: topAmountMember.name,
+        code: topAmountMember.code,
+        note: `成交额 ${formatYi(topAmountMember.amount)}，${topAmountMember.netFlow >= 0 ? '承接资金较强' : '容量承接仍待确认'}`,
+      });
+    }
+    if (follower) {
+      roles.push({
+        role: '补涨',
+        name: follower.name,
+        code: follower.code,
+        note:
+          'lbc' in follower
+            ? `${boardHeightLabel(follower.lbc)}，处于扩散补位阶段`
+            : `${formatPercent(follower.changePercent, 1)}，低位资金开始跟随`,
+      });
+    }
+    return roles;
+  }, [selectedMembers, selectedTopic]);
+
+  const ladderRows = useMemo(
+    () => buildLadderRows(data.stockTags, selectedMembers),
+    [data.stockTags, selectedMembers]
+  );
 
   function toggleSort(key: MemberSortKey) {
     setSortBy((current) => (current.key === key ? { key, dir: current.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
@@ -368,47 +670,378 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
   const hoverPoint = hover && hoverTopic ? hoverTopic.points[hover.pointIndex] : null;
 
   return (
-    <section className="overflow-hidden rounded-[24px] border border-border/70 bg-background/70">
+    <section className="overflow-hidden rounded-[28px] border border-border/70 bg-background/80 shadow-[0_18px_40px_rgba(15,23,42,0.06)]">
       <div className="border-b border-border/60 px-5 py-3.5">
-        <div className="mb-2.5">
-          <div className="text-sm font-semibold text-foreground">题材趋势</div>
-          <div className="mt-1 text-xs text-muted-foreground">
-            多题材趋势对比，点击题材切换下方个股明细。强度分 = 涨跌幅 25% + 上涨占比 20% + 涨停占比 25% + 成交额变化 10% + 资金流 20%。
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr),auto] xl:items-start">
+          <div>
+            <div className="text-base font-semibold text-foreground">题材趋势</div>
+            <div className="mt-1 max-w-[760px] text-xs leading-5 text-muted-foreground">
+              1D/3D 对比已切到真实板块资金流时序。当前榜单先基于现有候选池重排活跃度 Top10，后续可再替换更完整母样本。
+            </div>
           </div>
-        </div>
-        <div className="space-y-2">
-          {([
-            ['资金流入 Top5', inflowTopics],
-            ['资金流出 Top5', outflowTopics],
-          ] as const).map(([groupLabel, groupTopics]) =>
-            groupTopics.length > 0 ? (
-              <div key={groupLabel} className="flex flex-wrap items-center gap-2.5">
-                <span className="text-xs font-medium text-muted-foreground">{groupLabel}</span>
-                {groupTopics.map((topic) => {
-                  const active = topic.id === selectedTopic?.id;
-                  return (
-                    <button
-                      key={topic.id}
-                      type="button"
-                      onClick={() => setSelectedId(topic.id)}
-                      className={cn(
-                        'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors',
-                        active ? 'border-orange-300/90 bg-orange-50/85 text-orange-700 dark:border-orange-700 dark:bg-orange-950/20 dark:text-orange-200' : 'border-border/70 bg-background/65 text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: topic.color }} />
-                      <span>{topic.name}</span>
-                    </button>
-                  );
-                })}
+          <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
+            {pulseSummary.map((item) => (
+              <div key={item.label} className="rounded-[18px] border border-border/60 bg-background px-3 py-2.5">
+                <div className="text-[11px] text-muted-foreground">{item.label}</div>
+                <div className="mt-1 text-lg font-semibold leading-none text-foreground">{item.value}</div>
               </div>
-            ) : null
-          )}
+            ))}
+          </div>
         </div>
       </div>
 
-      <div className="p-4">
-        <div className="overflow-hidden rounded-[24px] border border-border/70 bg-background/65">
+      <div className="p-4 pt-3">
+        <div className="mb-4 grid gap-4 xl:grid-cols-[1.08fr,0.92fr] xl:items-stretch">
+          <div className="flex h-full flex-col overflow-hidden rounded-[26px] border border-border/70 bg-background shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
+            <div className="border-b border-border/60 px-4 py-3.5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-foreground">活跃板块排行榜</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {viewMode === 'today' ? '同一批板块按当日活跃度重排，优先回答“现在谁最活跃”。' : '同一批板块切到趋势排序，更容易看出持续强化与一日游。'}
+                  </div>
+                </div>
+                <div className="inline-flex rounded-full border border-border/60 bg-background p-1 shadow-sm">
+                  {([
+                    ['today', '今日截面'],
+                    ['trend', '趋势视角'],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setViewMode(mode)}
+                      className={cn(
+                        'rounded-full px-3 py-1.5 text-[11px] transition-all',
+                        viewMode === mode
+                        ? 'bg-foreground text-background shadow-[0_8px_20px_rgba(15,23,42,0.16)]'
+                          : 'text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto divide-y divide-border/50">
+              {activeTopicInsights.map((item, index) => {
+                const active = item.topic.id === selectedTopic?.id;
+                return (
+                  <button
+                    key={`insight-${item.topic.id}`}
+                    type="button"
+                    onClick={() => setSelectedId(item.topic.id)}
+                    className={cn(
+                      'grid w-full gap-3 px-4 py-2.5 text-left transition-all sm:grid-cols-[minmax(0,1.85fr),repeat(4,minmax(0,0.72fr)),auto]',
+                      index === 0 && !active && 'bg-rose-50/55',
+                      index === 1 && !active && 'bg-orange-50/45',
+                      index === 2 && !active && 'bg-amber-50/40',
+                      active
+                        ? 'bg-muted/30 shadow-[inset_3px_0_0_rgb(249_115_22)]'
+                        : 'hover:bg-muted/16'
+                    )}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.topic.color }} />
+                        <span className="truncate text-sm font-semibold text-foreground">{item.topic.name}</span>
+                        <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium shadow-sm', PULSE_STYLES[item.state])}>{item.state}</span>
+                      </div>
+                      <div className="mt-1 line-clamp-1 text-xs leading-5 text-muted-foreground">
+                        {viewMode === 'today'
+                          ? `上涨占比 ${item.breadthPct.toFixed(0)}% · 涨停占比 ${item.ztPct.toFixed(1)}%`
+                          : `${item.stateReason} · ${rankChip(item.rankDelta3d)}`}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">{viewMode === 'today' ? '今日强度' : '最新强度'}</div>
+                      <div className="mt-1 text-sm font-semibold text-foreground">{item.latest.strengthScore.toFixed(1)}</div>
+                    </div>
+                    <div>
+                      {viewMode === 'today' ? (
+                        <>
+                          <div className="text-xs text-muted-foreground">今日资金</div>
+                          <div className={cn('mt-1 text-sm font-semibold', item.topic.moneyFlow >= 0 ? 'text-rose-600' : 'text-emerald-600')}>
+                            {formatSignedYi(item.topic.moneyFlow)}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-xs text-muted-foreground">1日变化</div>
+                          <div className={cn('mt-1 text-sm font-semibold', item.scoreDelta1d >= 0 ? 'text-rose-600' : 'text-emerald-600')}>
+                            {formatPercent(item.scoreDelta1d, 1)}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <div>
+                      {viewMode === 'today' ? (
+                        <>
+                          <div className="text-xs text-muted-foreground">阶段涨跌</div>
+                          <div className={cn('mt-1 text-sm font-semibold', item.topic.changePct >= 0 ? 'text-rose-600' : 'text-emerald-600')}>
+                            {formatPercent(item.topic.changePct, 1)}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-xs text-muted-foreground">3日斜率</div>
+                          <div className={cn('mt-1 text-sm font-semibold', item.scoreDelta3d >= 0 ? 'text-rose-600' : 'text-emerald-600')}>
+                            {formatPercent(item.scoreDelta3d, 1)}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <div>
+                      {viewMode === 'today' ? (
+                        <>
+                          <div className="text-xs text-muted-foreground">成交额</div>
+                          <div className="mt-1 text-sm font-semibold text-foreground">{formatYi(item.topic.turnover)}</div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-xs text-muted-foreground">3日资金</div>
+                          <div className={cn('mt-1 text-sm font-semibold', item.flowDelta3d >= 0 ? 'text-rose-600' : 'text-emerald-600')}>
+                            {formatSignedYi(item.flowDelta3d)}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs text-muted-foreground">{viewMode === 'today' ? '历史状态' : '历史位次'}</div>
+                      {viewMode === 'today' ? (
+                        <div className={cn('mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium', PULSE_STYLES[item.state])}>{item.state}</div>
+                      ) : (
+                        <div className="mt-1 text-sm font-semibold text-foreground">#{item.latestRank}</div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {selectedInsight ? (
+          <div className="h-full overflow-hidden rounded-[26px] border border-border/70 bg-background shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
+            <div className="border-b border-border/60 px-4 py-3.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="text-sm font-semibold text-foreground">板块轨迹详情 · {selectedInsight.topic.name}</div>
+                  <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium shadow-sm', PULSE_STYLES[selectedInsight.state])}>
+                    {selectedInsight.state}
+                  </span>
+                </div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">{selectedInsight.stateReason}</div>
+              </div>
+              <div className="p-4">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-[18px] border border-border/60 px-3.5 py-3">
+                    <div className="text-xs text-muted-foreground">当前强度</div>
+                    <strong className="mt-1.5 block text-xl font-semibold text-foreground">{selectedInsight.latest.strengthScore.toFixed(1)}</strong>
+                    <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>今日主力</span>
+                      <span className={selectedInsight.topic.moneyFlow >= 0 ? 'text-rose-600' : 'text-emerald-600'}>{formatSignedYi(selectedInsight.topic.moneyFlow)}</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>成交额</span>
+                      <span className="text-foreground">{formatYi(selectedInsight.topic.turnover)}</span>
+                    </div>
+                  </div>
+                  <div className="rounded-[18px] border border-border/60 px-3.5 py-3">
+                    <div className="text-xs text-muted-foreground">3日变化</div>
+                    <strong className={cn('mt-1.5 block text-xl font-semibold', selectedInsight.scoreDelta3d >= 0 ? 'text-rose-600' : 'text-emerald-600')}>
+                      {formatPercent(selectedInsight.scoreDelta3d, 1)}
+                    </strong>
+                    <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>3日资金</span>
+                      <span className={selectedInsight.flowDelta3d >= 0 ? 'text-rose-600' : 'text-emerald-600'}>{formatSignedYi(selectedInsight.flowDelta3d)}</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>历史位次</span>
+                      <span className="text-foreground">#{selectedInsight.latestRank}</span>
+                    </div>
+                  </div>
+                  <div className="rounded-[18px] border border-border/60 px-3.5 py-3">
+                    <div className="text-xs text-muted-foreground">扩散指标</div>
+                    <strong className="mt-1.5 block text-xl font-semibold text-foreground">{selectedInsight.breadthPct.toFixed(0)}%</strong>
+                    <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>涨停占比</span>
+                      <span className="text-foreground">{selectedInsight.ztPct.toFixed(1)}%</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>阶段涨跌</span>
+                      <span className={selectedInsight.topic.changePct >= 0 ? 'text-rose-600' : 'text-emerald-600'}>{formatPercent(selectedInsight.topic.changePct, 1)}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 space-y-4">
+                  <div className="text-xs text-muted-foreground">近 {Math.min(selectedInsight.points.length, 10)} 个交易日强度轨迹</div>
+                  {(() => {
+                    const sparkPoints = selectedInsight.points.slice(-10);
+                    const scoreValues = sparkPoints.map((point) => point.strengthScore);
+                    const scoreMin = Math.min(...scoreValues);
+                    const scoreMax = Math.max(...scoreValues);
+                    const scoreRange = scoreMax - scoreMin || 1;
+                    const ratioValues = sparkPoints.map((point) => point.mainNetInflowRatio);
+                    const ratioMin = Math.min(...ratioValues, -2);
+                    const ratioMax = Math.max(...ratioValues, 2);
+                    const ratioRange = ratioMax - ratioMin || 1;
+                    const previewIndex = detailHoverIndex ?? Math.max(0, sparkPoints.length - 1);
+                    const activePoint = detailHoverIndex !== null ? sparkPoints[detailHoverIndex] : null;
+                    const activePrev = detailHoverIndex !== null ? sparkPoints[Math.max(0, detailHoverIndex - 1)] : null;
+                    const activeState = activePoint
+                      ? classifyPulse(
+                          { ...selectedInsight.topic, score: activePoint.strengthScore, moneyFlow: activePoint.mainNetInflow },
+                          sparkPoints.slice(0, detailHoverIndex + 1)
+                        ).state
+                      : null;
+
+                    const scoreY = (value: number) => 88 - ((value - scoreMin) / scoreRange) * 88;
+                    const ratioY = (value: number) => 108 - ((value - ratioMin) / ratioRange) * 24;
+
+                    return (
+                      <>
+                        <div className="relative" onMouseLeave={() => setDetailHoverIndex(null)}>
+                          <svg viewBox="0 0 320 132" className="h-[148px] w-full">
+                            <line x1="0" y1="108" x2="320" y2="108" stroke="currentColor" opacity="0.08" />
+                            <path
+                              d={sparkPoints
+                                .map((point, index) => {
+                                  const x = sparkPoints.length <= 1 ? 160 : (320 * index) / (sparkPoints.length - 1);
+                                  return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${scoreY(point.strengthScore).toFixed(1)}`;
+                                })
+                                .join(' ')}
+                              fill="none"
+                              stroke={selectedInsight.topic.color}
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                            />
+                            <path
+                              d={sparkPoints
+                                .map((point, index) => {
+                                  const x = sparkPoints.length <= 1 ? 160 : (320 * index) / (sparkPoints.length - 1);
+                                  return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${ratioY(point.mainNetInflowRatio).toFixed(1)}`;
+                                })
+                                .join(' ')}
+                              fill="none"
+                              stroke="#94a3b8"
+                              strokeWidth="1.5"
+                              strokeDasharray="4 4"
+                              strokeLinecap="round"
+                            />
+                            {sparkPoints.map((point, index, arr) => {
+                              const x = arr.length <= 1 ? 160 : (320 * index) / (arr.length - 1);
+                              const y = scoreY(point.strengthScore);
+                              const recentStart = Math.max(0, arr.length - 5);
+                              const isRecent = index >= recentStart;
+                              const state = classifyPulse(
+                                { ...selectedInsight.topic, score: point.strengthScore, moneyFlow: point.mainNetInflow },
+                                arr.slice(0, index + 1)
+                              ).state;
+                              const isActive = index === previewIndex;
+                              return (
+                                <g key={`spark-${point.date}`}>
+                                  {isRecent ? <line x1={x} y1="16" x2={x} y2="114" stroke="currentColor" opacity={isActive ? 0.12 : 0.06} strokeDasharray="3 5" /> : null}
+                                  <circle
+                                    cx={x}
+                                    cy={y}
+                                    r={isRecent ? (isActive ? 5.6 : 4.6) : index === arr.length - 1 ? 4.5 : 3}
+                                    fill={isRecent ? '#ffffff' : selectedInsight.topic.color}
+                                    stroke={isRecent ? PULSE_COLORS[state] : selectedInsight.topic.color}
+                                    strokeWidth={isRecent ? (isActive ? 3 : 2.2) : 0}
+                                    onMouseEnter={() => setDetailHoverIndex(index)}
+                                  />
+                                  {isRecent ? (
+                                    <circle
+                                      cx={x}
+                                      cy={ratioY(point.mainNetInflowRatio)}
+                                      r={isActive ? 4 : 3.2}
+                                      fill="#94a3b8"
+                                      onMouseEnter={() => setDetailHoverIndex(index)}
+                                    />
+                                  ) : null}
+                                  {(index === 0 || index === arr.length - 1 || index % 3 === 0) && (
+                                    <text x={x} y="126" textAnchor="middle" fontSize="9" fill="currentColor" opacity="0.55">
+                                      {shortDate(point.date)}
+                                    </text>
+                                  )}
+                                  {isRecent && isActive ? (
+                                    <text x={x} y={Math.max(12, y - 10)} textAnchor="middle" fontSize="9" fill="currentColor" opacity="0.82">
+                                      {state}
+                                    </text>
+                                  ) : null}
+                                </g>
+                              );
+                            })}
+                          </svg>
+                          {activePoint && activeState ? (
+                            <div className="pointer-events-none absolute right-2 top-2 rounded-[16px] border border-border/70 bg-background/95 px-3 py-2 text-[11px] shadow-[0_16px_30px_rgba(15,23,42,0.12)] backdrop-blur-sm">
+                              <div className="flex items-center gap-2">
+                                <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', PULSE_STYLES[activeState])}>{activeState}</span>
+                                <span className="text-muted-foreground">{shortDate(activePoint.date)}</span>
+                              </div>
+                              <div className="mt-1 text-foreground">{buildStateNote(activePoint, activePrev)}</div>
+                              <div className="mt-1 text-muted-foreground">
+                                强度 {activePoint.strengthScore.toFixed(1)} · 净流入 {formatSignedYi(activePoint.mainNetInflow)} · 净占比 {formatPercent(activePoint.mainNetInflowRatio, 1)}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+                          <span>强度 1D {formatPercent(selectedInsight.scoreDelta1d, 1)}</span>
+                          <span>资金 3D {formatSignedYi(selectedInsight.flowDelta3d)}</span>
+                          <span>虚线: 主力净流入占比</span>
+                          <span>彩环点: 近5日状态</span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                  <div className="border-t border-border/60 pt-4">
+                    <div className="text-xs text-muted-foreground">内部梯队与扩散</div>
+                    <div className="mt-3 grid gap-4 xl:grid-cols-2">
+                      <div className="space-y-2.5">
+                        {ladderRows.map((row) => (
+                          <div key={row.label} className="grid items-center gap-2.5 grid-cols-[56px,1fr,48px]">
+                            <div className="text-[11px] text-muted-foreground">{row.label}</div>
+                            <div className="h-2.5 overflow-hidden rounded-full bg-muted/35">
+                              <div className="h-full rounded-full bg-[linear-gradient(90deg,#fb923c,#f97316)] shadow-[0_6px_18px_rgba(249,115,22,0.18)]" style={{ width: `${row.width}%` }} />
+                            </div>
+                            <div className="text-xs font-medium text-foreground">{row.count} 家</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="max-h-[236px] overflow-y-auto pr-1">
+                        <div className="grid gap-2">
+                        {structureRoles.map((role) => (
+                          <button
+                            key={`${role.role}-${role.name}`}
+                            type="button"
+                            onClick={() => role.code && onSelectStock?.(role.code, role.name)}
+                            className="rounded-[14px] border border-border/60 bg-muted/10 px-2.5 py-2 text-left transition-all hover:-translate-y-[1px] hover:border-orange-300/70 hover:shadow-[0_12px_28px_rgba(249,115,22,0.08)]"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex min-w-0 items-center gap-1.5">
+                                <div className="truncate text-sm font-semibold text-foreground">{role.name}</div>
+                                <span className="shrink-0 rounded-full bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">{role.role}</span>
+                              </div>
+                              {role.code ? <div className="shrink-0 text-[10px] text-muted-foreground">{role.code}</div> : null}
+                            </div>
+                            <div className="mt-1 line-clamp-1 text-[11px] leading-4 text-muted-foreground">{role.note}</div>
+                          </button>
+                        ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="overflow-hidden rounded-[26px] border border-border/70 bg-background shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
+          <div className="border-b border-border/60 px-4 py-3.5">
+            <div className="text-sm font-semibold text-foreground">历史强度时序</div>
+            <div className="mt-1 text-xs text-muted-foreground">柱体看当日强度，折线看真实资金流 EXPMA(3) 偏离，便于把今天截面放回近几日背景里。</div>
+          </div>
           <div className="relative overflow-x-auto">
             <svg viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} className="min-w-[980px] w-full" onMouseLeave={() => setHover(null)}>
               <rect x={PAD.left} y={PAD.top} width={SVG_WIDTH - PAD.left - PAD.right} height={yForStrength(75) - PAD.top} fill="rgba(255,110,128,0.04)" rx="24" />
@@ -529,32 +1162,32 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
             </svg>
 
             {hoverPoint && hoverTopic ? (
-              <div className="pointer-events-none absolute right-3 top-3 rounded-2xl border border-border/70 bg-background px-3.5 py-3 text-xs shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
+              <div className="pointer-events-none absolute right-3 top-3 rounded-[22px] border border-border/70 bg-background/95 px-3.5 py-3 text-xs shadow-[0_18px_36px_rgba(15,23,42,0.12)] backdrop-blur-sm">
                 <div className="font-medium text-foreground">{hoverTopic.topic.name}</div>
                 <div className="mt-1 text-muted-foreground">{hoverPoint.date}</div>
                 <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5">
                   <div className="text-muted-foreground">EXPMA(3)</div>
-                  <div className="text-right text-foreground">{hoverPoint.expmaValue.toFixed(2)}</div>
-                  <div className="text-muted-foreground">偏离率</div>
+                  <div className="text-right text-foreground">{formatSignedYi(hoverPoint.expmaValue)}</div>
+                  <div className="text-muted-foreground">流向强度</div>
                   <div className="text-right text-foreground">{formatPercent(hoverPoint.expmaDeltaPct, 1)}</div>
                   <div className="text-muted-foreground">日强度</div>
                   <div className="text-right text-foreground">{hoverPoint.strengthScore.toFixed(1)}</div>
-                  <div className="text-muted-foreground">当日涨跌</div>
-                  <div className={cn('text-right', hoverPoint.pct >= 0 ? 'text-rose-600' : 'text-emerald-600')}>{formatPercent(hoverPoint.pct)}</div>
+                  <div className="text-muted-foreground">主力净流入</div>
+                  <div className={cn('text-right', hoverPoint.mainNetInflow >= 0 ? 'text-rose-600' : 'text-emerald-600')}>{formatSignedYi(hoverPoint.mainNetInflow)}</div>
                   <div className="text-muted-foreground">阶段</div>
                   <div className="text-right text-muted-foreground">{stageForScore(hoverPoint.strengthScore)}</div>
                 </div>
                 <div className="mt-3 border-t border-border/60 pt-2.5">
-                  <div className="mb-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Daily K</div>
+                  <div className="mb-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Flow Mix</div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                    <div className="text-muted-foreground">开</div>
-                    <div className="text-right text-foreground">{hoverPoint.open.toFixed(2)}</div>
-                    <div className="text-muted-foreground">高</div>
-                    <div className="text-right text-foreground">{hoverPoint.high.toFixed(2)}</div>
-                    <div className="text-muted-foreground">低</div>
-                    <div className="text-right text-foreground">{hoverPoint.low.toFixed(2)}</div>
-                    <div className="text-muted-foreground">收</div>
-                    <div className="text-right text-foreground">{hoverPoint.close.toFixed(2)}</div>
+                    <div className="text-muted-foreground">主力净占比</div>
+                    <div className="text-right text-foreground">{formatPercent(hoverPoint.mainNetInflowRatio, 2)}</div>
+                    <div className="text-muted-foreground">超大单</div>
+                    <div className="text-right text-foreground">{formatSignedYi(hoverPoint.superLargeNetInflow)}</div>
+                    <div className="text-muted-foreground">大单</div>
+                    <div className="text-right text-foreground">{formatSignedYi(hoverPoint.largeNetInflow)}</div>
+                    <div className="text-muted-foreground">中小单</div>
+                    <div className="text-right text-foreground">{formatSignedYi(hoverPoint.midNetInflow + hoverPoint.smallNetInflow)}</div>
                   </div>
                 </div>
               </div>
@@ -620,105 +1253,102 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
             </div>
           </div>
 
-          <div className="mt-4 overflow-hidden rounded-[20px] border border-border/60">
+          <div className="mt-4 overflow-hidden rounded-[22px] border border-border/60 bg-background/60">
             <div className="max-h-[500px] overflow-auto">
-            <table className="w-full text-left">
-              <thead className="sticky top-0 bg-muted/20 text-muted-foreground backdrop-blur">
-                <tr className="text-sm">
-                  <th className="px-5 py-3.5 font-medium">
-                    <button type="button" className="hover:text-foreground" onClick={() => toggleSort('rank')}>
-                      排名
-                    </button>
-                  </th>
-                  <th className="px-5 py-3.5 font-medium">代码</th>
-                  <th className="px-5 py-3.5 font-medium">名称</th>
-                  <th className="px-5 py-3.5 font-medium">
-                    <button type="button" className="hover:text-foreground" onClick={() => toggleSort('changePercent')}>
-                      涨跌幅
-                    </button>
-                  </th>
-                  <th className="px-5 py-3.5 font-medium">
-                    <button type="button" className="hover:text-foreground" onClick={() => toggleSort('amount')}>
-                      成交额
-                    </button>
-                  </th>
-                  <th className="px-5 py-3.5 font-medium">资金净流入</th>
-                  <th className="px-5 py-3.5 font-medium">
-                    <button type="button" className="hover:text-foreground" onClick={() => toggleSort('turnoverRate')}>
-                      换手率
-                    </button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedMembers.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-5 py-7 text-center text-sm text-muted-foreground">
-                      加载成分股中…
-                    </td>
+              <table className="w-full text-left">
+                <thead className="sticky top-0 bg-muted/20 text-muted-foreground backdrop-blur">
+                  <tr className="text-sm">
+                    <th className="px-5 py-3.5 font-medium">
+                      <button type="button" className="hover:text-foreground" onClick={() => toggleSort('rank')}>
+                        排名
+                      </button>
+                    </th>
+                    <th className="px-5 py-3.5 font-medium">代码</th>
+                    <th className="px-5 py-3.5 font-medium">名称</th>
+                    <th className="px-5 py-3.5 font-medium">
+                      <button type="button" className="hover:text-foreground" onClick={() => toggleSort('changePercent')}>
+                        涨跌幅
+                      </button>
+                    </th>
+                    <th className="px-5 py-3.5 font-medium">
+                      <button type="button" className="hover:text-foreground" onClick={() => toggleSort('amount')}>
+                        成交额
+                      </button>
+                    </th>
+                    <th className="px-5 py-3.5 font-medium">资金净流入</th>
+                    <th className="px-5 py-3.5 font-medium">
+                      <button type="button" className="hover:text-foreground" onClick={() => toggleSort('turnoverRate')}>
+                        换手率
+                      </button>
+                    </th>
                   </tr>
-                ) : (
-                  sortedMembers.map((member) => (
-                    <tr
-                      key={`${selectedTopic.id}-${member.code}`}
-                      className="border-t border-border/50 text-sm hover:bg-muted/20"
-                    >
-                      <td className="px-5 py-3 text-foreground">{member.rank}</td>
-                      <td className="px-5 py-3 text-muted-foreground">{member.code}</td>
-                      <td className="px-5 py-3 font-medium text-foreground">
-                        <button
-                          type="button"
-                          onClick={() => onSelectStock?.(member.code, member.name)}
-                          className="cursor-pointer text-left text-foreground hover:text-orange-600"
-                        >
-                          {member.name}
-                        </button>
-                        {member.status ? (
-                          <TooltipProvider>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="ml-2 inline-flex rounded-full bg-orange-100 px-2 py-0.5 text-[10px] text-orange-700 dark:bg-orange-950/30 dark:text-orange-300">
-                                  {member.status}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="top"
-                                align="start"
-                                sideOffset={8}
-                                className="max-w-[280px] rounded-2xl border border-orange-200/55 bg-white/88 px-3 py-2.5 text-[12px] leading-5 text-slate-700 shadow-[0_14px_28px_rgba(15,23,42,0.10)] backdrop-blur-sm dark:border-orange-900/40 dark:bg-slate-950/84 dark:text-slate-200"
-                              >
-                                <div className="flex items-center gap-2">
-                                  <span className="inline-flex rounded-full bg-orange-100/80 px-2 py-0.5 text-[10px] font-semibold text-orange-700 dark:bg-orange-950/30 dark:text-orange-200">
+                </thead>
+                <tbody>
+                  {sortedMembers.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-5 py-7 text-center text-sm text-muted-foreground">
+                        加载成分股中…
+                      </td>
+                    </tr>
+                  ) : (
+                    sortedMembers.map((member) => (
+                      <tr key={`${selectedTopic.id}-${member.code}`} className="border-t border-border/50 text-sm hover:bg-muted/20">
+                        <td className="px-5 py-3 text-foreground">{member.rank}</td>
+                        <td className="px-5 py-3 text-muted-foreground">{member.code}</td>
+                        <td className="px-5 py-3 font-medium text-foreground">
+                          <button
+                            type="button"
+                            onClick={() => onSelectStock?.(member.code, member.name)}
+                            className="cursor-pointer text-left text-foreground hover:text-orange-600"
+                          >
+                            {member.name}
+                          </button>
+                          {member.status ? (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="ml-2 inline-flex rounded-full bg-orange-100 px-2 py-0.5 text-[10px] text-orange-700 dark:bg-orange-950/30 dark:text-orange-300">
                                     {member.status}
                                   </span>
-                                  {member.limitPlate ? (
-                                    <span className="text-[11px] text-slate-500/90 dark:text-slate-400">{member.limitPlate}</span>
-                                  ) : null}
-                                </div>
-                                <div className="mt-2 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400/90 dark:text-slate-500">
-                                  涨停分析
-                                </div>
-                                <div className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-slate-700/95 dark:text-slate-200">
-                                  {member.limitAnalysis || member.limitPlate || '暂无涨停分析'}
-                                </div>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        ) : null}
-                      </td>
-                      <td className={cn('px-5 py-3 font-medium', member.changePercent >= 0 ? 'text-rose-600' : 'text-emerald-600')}>
-                        {formatPercent(member.changePercent)}
-                      </td>
-                      <td className="px-5 py-3 text-foreground">{formatYi(member.amount)}</td>
-                      <td className={cn('px-5 py-3 font-medium', member.netFlow >= 0 ? 'text-rose-600' : 'text-emerald-600')}>
-                        {formatSignedYi(member.netFlow)}
-                      </td>
-                      <td className="px-5 py-3 text-foreground">{member.turnoverRate.toFixed(1)}%</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                                </TooltipTrigger>
+                                <TooltipContent
+                                  side="top"
+                                  align="start"
+                                  sideOffset={8}
+                                  className="max-w-[280px] rounded-2xl border border-orange-200/55 bg-white/88 px-3 py-2.5 text-[12px] leading-5 text-slate-700 shadow-[0_14px_28px_rgba(15,23,42,0.10)] backdrop-blur-sm dark:border-orange-900/40 dark:bg-slate-950/84 dark:text-slate-200"
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span className="inline-flex rounded-full bg-orange-100/80 px-2 py-0.5 text-[10px] font-semibold text-orange-700 dark:bg-orange-950/30 dark:text-orange-200">
+                                      {member.status}
+                                    </span>
+                                    {member.limitPlate ? (
+                                      <span className="text-[11px] text-slate-500/90 dark:text-slate-400">{member.limitPlate}</span>
+                                    ) : null}
+                                  </div>
+                                  <div className="mt-2 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400/90 dark:text-slate-500">
+                                    涨停分析
+                                  </div>
+                                  <div className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-slate-700/95 dark:text-slate-200">
+                                    {member.limitAnalysis || member.limitPlate || '暂无涨停分析'}
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          ) : null}
+                        </td>
+                        <td className={cn('px-5 py-3 font-medium', member.changePercent >= 0 ? 'text-rose-600' : 'text-emerald-600')}>
+                          {formatPercent(member.changePercent)}
+                        </td>
+                        <td className="px-5 py-3 text-foreground">{formatYi(member.amount)}</td>
+                        <td className={cn('px-5 py-3 font-medium', member.netFlow >= 0 ? 'text-rose-600' : 'text-emerald-600')}>
+                          {formatSignedYi(member.netFlow)}
+                        </td>
+                        <td className="px-5 py-3 text-foreground">{member.turnoverRate.toFixed(1)}%</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
