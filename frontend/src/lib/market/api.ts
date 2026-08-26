@@ -56,7 +56,7 @@ type ClistItem = {
   f106?: number | string;
 };
 
-type ClistResponse = { data?: { diff?: ClistItem[] | Record<string, ClistItem> } };
+type ClistResponse = { data?: { total?: number | string; diff?: ClistItem[] | Record<string, ClistItem> } };
 type KlineResponse = { data?: { klines?: string[] } };
 type PoolItem = { n?: string; c?: string; hybk?: string; fbt?: number; lbc?: number; fund?: number; p?: number };
 type TopicPoolResponse = { data?: { pool?: PoolItem[] } };
@@ -615,7 +615,8 @@ export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
   }
 
   const map = new Map<string, string>();
-  const pageSize = 500;
+  const pageSize = 200;
+  let total = 0;
 
   for (let page = 1; page < 100; page += 1) {
     const url = `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(
@@ -624,14 +625,19 @@ export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
 
     try {
       const data = await marketGet<{
-        data?: { diff?: Array<{ f12?: string; f14?: string }> | Record<string, { f12?: string; f14?: string }> };
+        data?: {
+          total?: number | string;
+          diff?: Array<{ f12?: string; f14?: string }> | Record<string, { f12?: string; f14?: string }>;
+        };
       }>(url, TTL.hours(1), false, buildMarketCacheKey('loadIndustryPlateCodesPage', { page, pageSize }));
+      total = Math.max(total, Number(data?.data?.total) || 0);
       const diff = data?.data?.diff;
       const rows = Array.isArray(diff) ? diff : diff ? Object.values(diff) : [];
       rows.forEach((item) => {
         if (item.f14 && item.f12) map.set(item.f14, item.f12);
       });
-      if (rows.length < pageSize) break;
+      if (rows.length === 0) break;
+      if (total > 0 && map.size >= total) break;
     } catch {
       break;
     }
