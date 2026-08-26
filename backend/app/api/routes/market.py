@@ -1,8 +1,7 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 
-from app.api.dependencies import check_usage_limit
 from app.services.trading_calendar_service import TradingCalendarService
 from app.utils.response import api_response
 
@@ -14,7 +13,6 @@ async def get_trading_calendar(
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
     limit: int | None = Query(None, ge=1, le=365),
-    _: None = Depends(check_usage_limit),
 ):
     calendar = await TradingCalendarService.get_trade_calendar()
     values = calendar
