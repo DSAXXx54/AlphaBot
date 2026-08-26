@@ -25,6 +25,7 @@ from app.schemas.sentiment import (
     SentimentSyncDateResponse,
 )
 from app.services.data_sources.tdx import TDXDataSource
+from app.services.trading_calendar_service import TradingCalendarService
 
 logger = logging.getLogger("uvicorn")
 
@@ -39,8 +40,6 @@ class PoolFetchResult:
 
 
 class SentimentService:
-    _trade_calendar_cache: list[date] | None = None
-    _trade_calendar_loaded_at: datetime | None = None
     _sync_lock_guard: asyncio.Lock = asyncio.Lock()
     _sync_locks: dict[str, asyncio.Lock] = {}
     _tdx_source: TDXDataSource | None = None
@@ -148,43 +147,12 @@ class SentimentService:
 
     @classmethod
     async def get_trade_calendar(cls) -> list[date]:
-        now = datetime.utcnow()
-        if (
-            cls._trade_calendar_cache is not None
-            and cls._trade_calendar_loaded_at is not None
-            and (now - cls._trade_calendar_loaded_at) < timedelta(hours=6)
-        ):
-            return cls._trade_calendar_cache
-
-        def _load_calendar() -> list[date]:
-            try:
-                import akshare as ak  # type: ignore
-            except ModuleNotFoundError as exc:
-                raise RuntimeError("akshare 未安装，无法加载交易日历") from exc
-
-            calendar_df = ak.tool_trade_date_hist_sina()
-            column = "trade_date" if "trade_date" in calendar_df.columns else calendar_df.columns[0]
-            return [
-                value.date() if hasattr(value, "date") else datetime.strptime(str(value), "%Y-%m-%d").date()
-                for value in calendar_df[column].tolist()
-            ]
-
-        try:
-            cls._trade_calendar_cache = await cls._run_sync(_load_calendar)
-            cls._trade_calendar_loaded_at = now
-        except Exception as exc:
-            logger.warning("加载交易日历失败，回退到工作日判断: %s", exc)
-            cls._trade_calendar_cache = []
-            cls._trade_calendar_loaded_at = now
-
-        return cls._trade_calendar_cache
+        return await TradingCalendarService.get_trade_calendar()
 
     @classmethod
     async def is_trading_day(cls, trade_date: date) -> bool:
         calendar = await cls.get_trade_calendar()
-        if calendar:
-            return trade_date in calendar
-        return trade_date.weekday() < 5
+        return trade_date in calendar
 
     @classmethod
     async def list_month_calendar(cls, db: Session, year: int, month: int) -> SentimentCalendarResponse:

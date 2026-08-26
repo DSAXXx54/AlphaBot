@@ -13,6 +13,7 @@ from app.api.routes import (
     channel_telegram,
     worldcup,
     sentiment,
+    market,
 )
 
 api_router = APIRouter()
@@ -27,6 +28,7 @@ api_router.include_router(reports.router, prefix="/reports", tags=["reports"])
 api_router.include_router(agent.router, prefix="/agent", tags=["agent"])
 api_router.include_router(search.router, prefix="/search", tags=["search"])
 api_router.include_router(sentiment.router, prefix="/sentiment", tags=["sentiment"])
+api_router.include_router(market.router, prefix="/market", tags=["market"])
 api_router.include_router(worldcup.router, prefix="/worldcup", tags=["worldcup"])
 api_router.include_router(channel_feishu.router, prefix="/channel/feishu", tags=["channel:feishu"])
 api_router.include_router(channel_telegram.router, prefix="/channel/telegram", tags=["channel:telegram"])

@@ -1,6 +1,7 @@
 import { TTL, mapBatches, marketGet, marketGetForce } from './client';
 import { asNumber, formatAmount, formatAmountChange, formatChange, normalizeCode, normalizePlateName, yyyymmdd } from './format';
 import type { MarketPayoffItem, TurnoverMinutePoint, TurnoverSnapshot } from './types';
+import { api } from '../api';
 
 export type PlateFlow = {
   code: string;
@@ -116,25 +117,21 @@ async function loadPool(type: TopicStock['type'], dateStr: string, latest: boole
 }
 
 export async function loadTradingDays(limit = 20, force = false): Promise<string[]> {
-  const url =
-    'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.000001&fields1=f1,f2,f3,f4,f5,f6&fields2=f51&klt=101&fqt=1&end=20500101&lmt=30&cb=__em';
   try {
-    const json = await marketLoad<KlineResponse>(url, TTL.minutes(30), true, force);
-    const days = (json.data?.klines || [])
-      .map((line) => line.slice(0, 10).replace(/-/g, ''))
-      .filter((day) => /^\d{8}$/.test(day));
-    if (days.length > 0) return days.slice(-limit);
-  } catch {
-    // calendar fallback
+    const response = await api.get<{ success: boolean; data?: { days?: string[] }; error?: string }>(
+      `/market/trading-calendar?limit=${limit}`,
+      {
+        headers: force ? { 'Cache-Control': 'no-cache' } : undefined,
+      }
+    );
+    if (!response.data.success || !response.data.data?.days) {
+      return [];
+    }
+    return response.data.data.days.map((day) => day.replace(/-/g, '')).filter((day) => /^\d{8}$/.test(day));
+  } catch (error) {
+    console.warn('[market] loadTradingDays failed', error);
+    return [];
   }
-  const days: string[] = [];
-  const cursor = new Date();
-  while (days.length < limit) {
-    const day = cursor.getDay();
-    if (day !== 0 && day !== 6) days.unshift(yyyymmdd(cursor));
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  return days;
 }
 
 export async function loadTurnover(force = false): Promise<TurnoverSnapshot | null> {
