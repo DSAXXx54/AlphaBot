@@ -210,6 +210,10 @@ function requestWithFallback<T>(url: string): Promise<T> {
   return fetchJson<T>(url).catch(() => jsonp<T>(url));
 }
 
+function hasFoxAgentCrossRequest() {
+  return typeof window !== 'undefined' && typeof window.foxAgentCrossRequest === 'function';
+}
+
 export function marketEastmoneyGet<T>(
   url: string,
   ttl = TTL.seconds(30),
@@ -217,15 +221,20 @@ export function marketEastmoneyGet<T>(
   key: string,
   options?: { force?: boolean; foxUrl?: string }
 ): Promise<T> {
+  if (hasFoxAgentCrossRequest()) {
+    return cached(key, ttl, persist, () => foxRequestJson<T>(options?.foxUrl || url), {
+      force: options?.force === true,
+    });
+  }
   return cached(
     key,
     ttl,
     persist,
     async () => {
       try {
-        return await foxRequestJson<T>(options?.foxUrl || url);
+        return await jsonp<T>(url);
       } catch {
-        return jsonp<T>(url);
+        return fetchJson<T>(url);
       }
     },
     { force: options?.force === true }
