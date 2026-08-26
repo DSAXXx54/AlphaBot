@@ -952,7 +952,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock, refreshToke
                     const activeState = activePoint
                       ? classifyPulse(
                           { ...selectedInsight.topic, score: activePoint.strengthScore, moneyFlow: activePoint.mainNetInflow },
-                          sparkPoints.slice(0, detailHoverIndex + 1)
+                          sparkPoints.slice(0, previewIndex + 1)
                         ).state
                       : null;
 

@@ -182,5 +182,10 @@ export function buildSectorTrendData(
     latestDay: date,
     topics: topics.sort((a, b) => b.score - a.score || b.moneyFlow - a.moneyFlow),
     stockTags: buildStockTags(ztList, surge),
+    sampleStats: {
+      baseCount: plates.length,
+      eventAddedCount: 0,
+      finalCount: topics.length,
+    },
   };
 }

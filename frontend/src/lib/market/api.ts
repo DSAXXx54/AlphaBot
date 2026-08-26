@@ -570,7 +570,7 @@ export async function searchPlateCodeByName(name: string): Promise<string | null
 export async function loadStrong(force = false): Promise<MarketPayoffItem[]> {
   const url = 'https://flash-api.xuangubao.com.cn/api/pool/detail?pool_name=super_stock';
   try {
-    const data = await marketGet<{
+    const data = await marketLoad<{
       code?: number;
       data?: Array<{
         stock_chi_name?: string;
@@ -610,7 +610,7 @@ export async function loadStrong(force = false): Promise<MarketPayoffItem[]> {
 export async function loadHot(force = false): Promise<MarketPayoffItem[]> {
   const url = 'https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock?stock_type=a&type=hour&list_type=normal';
   try {
-    const data = await marketGet<
+    const data = await marketLoad<
       ThsEnvelope<{
         stock_list?: Array<{
           name?: string;
@@ -643,7 +643,7 @@ export async function loadBigFace(days: string[], force = false): Promise<Market
   for (const dateStr of candidates) {
     const url = `https://data.10jqka.com.cn/mobileapi/hotspot_focus/stock_pool/v1/get_drawdown_stocks?date=${dateStr}&cate=limit_up&sort_field=max_drawdown&sort_dir=asc&page=1&size=200`;
     try {
-      const data = await marketGet<
+      const data = await marketLoad<
         ThsEnvelope<{
           stock_list?: Array<{
             is_st?: boolean;

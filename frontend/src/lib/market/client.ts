@@ -92,6 +92,60 @@ function withCallback(url: string, name: string): string {
   return `${url}${url.includes('?') ? '&' : '?'}cb=${name}`;
 }
 
+function parseJsonOrJsonp<T>(payload: unknown): T {
+  if (payload instanceof ArrayBuffer) {
+    const text = new TextDecoder('utf-8').decode(new Uint8Array(payload));
+    return parseJsonOrJsonp<T>(text);
+  }
+  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(payload)) {
+    const view = payload as ArrayBufferView;
+    const text = new TextDecoder('utf-8').decode(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+    return parseJsonOrJsonp<T>(text);
+  }
+  if (payload && typeof payload === 'object') return payload as T;
+  const text = typeof payload === 'string' ? payload : String(payload ?? '');
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error('empty payload');
+  }
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    return JSON.parse(trimmed) as T;
+  }
+  const left = trimmed.indexOf('(');
+  const right = trimmed.lastIndexOf(')');
+  if (left === -1 || right === -1 || right <= left) {
+    throw new Error('invalid jsonp payload');
+  }
+  return JSON.parse(trimmed.slice(left + 1, right)) as T;
+}
+
+function stripJsonpCallback(url: string): string {
+  return url
+    .replace(/([?&])cb=[^&]*/g, '$1')
+    .replace(/([?&])callback=[^&]*/g, '$1')
+    .replace(/[?&]$/, '')
+    .replace(/\?&/, '?');
+}
+
+async function foxRequestJson<T>(url: string): Promise<T> {
+  if (typeof window === 'undefined' || typeof window.foxAgentCrossRequest !== 'function') {
+    throw new Error('foxAgentCrossRequest unavailable');
+  }
+  const payload = await new Promise<unknown>((resolve, reject) => {
+    window.foxAgentCrossRequest?.({
+      url: stripJsonpCallback(url),
+      method: 'GET',
+      success(body) {
+        resolve(body);
+      },
+      error(error) {
+        reject(error instanceof Error ? error : new Error(typeof error === 'string' ? error : JSON.stringify(error)));
+      },
+    });
+  });
+  return parseJsonOrJsonp<T>(payload);
+}
+
 export function jsonp<T>(url: string, timeout = 12000): Promise<T> {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined') {
@@ -139,7 +193,13 @@ function isEastmoney(url: string) {
 
 export function marketGet<T>(url: string, ttl = TTL.seconds(30), persist = false): Promise<T> {
   return cached(cacheKey(url), ttl, persist, async () => {
-    if (isEastmoney(url)) return jsonp<T>(url);
+    if (isEastmoney(url)) {
+      try {
+        return await foxRequestJson<T>(url);
+      } catch {
+        return jsonp<T>(url);
+      }
+    }
     try {
       return await fetchJson<T>(url);
     } catch {
@@ -154,7 +214,13 @@ export function marketGetForce<T>(url: string, ttl = TTL.seconds(30), persist = 
     ttl,
     persist,
     async () => {
-      if (isEastmoney(url)) return jsonp<T>(url);
+      if (isEastmoney(url)) {
+        try {
+          return await foxRequestJson<T>(url);
+        } catch {
+          return jsonp<T>(url);
+        }
+      }
       try {
         return await fetchJson<T>(url);
       } catch {
