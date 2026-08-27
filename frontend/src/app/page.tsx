@@ -9,7 +9,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useAccounts } from '@/lib/contexts/AccountContext';
-import { isTradingTime } from '@/lib/market/format';
+import { isTradingTime, yyyymmdd } from '@/lib/market/format';
 import { searchStocks } from '@/lib/api';
 import {
   DEFAULT_MARKET_SNAPSHOT,
@@ -113,6 +113,12 @@ const EMPTY_CARD_DETAILS: Record<MarketCardLabel, boolean> = {
   主线: true,
   赚钱效应: true,
 };
+const MARKET_TRADING_RELOAD_MS = 60_000;
+
+type MarketPageLoadMeta = {
+  sessionKey: string;
+  lastSyncedAt: number;
+};
 
 function toneTextClassName(tone?: 'up' | 'down' | 'normal') {
   if (tone === 'down') return 'text-emerald-600 dark:text-emerald-300';
@@ -158,6 +164,7 @@ export default function Home() {
   const userMenuRef = useRef<HTMLDivElement>(null);
   const userButtonRef = useRef<HTMLButtonElement>(null);
   const topicMenuRef = useRef<HTMLDivElement>(null);
+  const marketPageLoadMetaRef = useRef<MarketPageLoadMeta | null>(null);
   const modeConfig = HOME_VIEW_MODES[viewMode];
   const emotionSeries = marketSnapshot.emotionSeries;
   const selectedEmotionPoint =
@@ -191,6 +198,32 @@ export default function Home() {
       setViewMode('stock');
     }
   }, [isAuthenticated, isReady, viewMode]);
+
+  const getMarketSessionKey = useCallback(() => {
+    const now = new Date();
+    return `${yyyymmdd(now)}:${isTradingTime(now) ? 'trading' : 'offhours'}`;
+  }, []);
+
+  const shouldReloadMarketPage = useCallback(() => {
+    const now = Date.now();
+    const sessionKey = getMarketSessionKey();
+    const current = marketPageLoadMetaRef.current;
+    const inTrading = sessionKey.endsWith(':trading');
+    if (!current || current.sessionKey !== sessionKey) {
+      return true;
+    }
+    if (!inTrading) {
+      return false;
+    }
+    return now - current.lastSyncedAt >= MARKET_TRADING_RELOAD_MS;
+  }, [getMarketSessionKey]);
+
+  const markMarketPageSynced = useCallback(() => {
+    marketPageLoadMetaRef.current = {
+      sessionKey: getMarketSessionKey(),
+      lastSyncedAt: Date.now(),
+    };
+  }, [getMarketSessionKey]);
 
   const refreshMarket = useCallback(async (labels: MarketCardLabel[] = MARKET_CARD_LABELS, force = true) => {
     setCardRefreshing((current) => {
@@ -269,6 +302,7 @@ export default function Home() {
         });
         return next;
       });
+      markMarketPageSynced();
     } catch (error: unknown) {
       console.error('加载市场总览失败:', error);
     } finally {
@@ -281,19 +315,25 @@ export default function Home() {
         return next;
       });
     }
-  }, [activeMarketCard, emotionOverviewMode, shortEmotionCycle]);
+  }, [activeMarketCard, emotionOverviewMode, markMarketPageSynced, shortEmotionCycle]);
 
   useEffect(() => {
     if (viewMode !== 'market' || !isAuthenticated) {
       return;
     }
 
+    if (!shouldReloadMarketPage()) {
+      return;
+    }
+
     let active = true;
     setMarketLoading(true);
     setLoadedMarketCards({ ...EMPTY_CARD_DETAILS });
-    loadMarketSummarySnapshot()
+    loadMarketSummarySnapshot(false)
       .then((snapshot) => {
-        if (active) setMarketSnapshot(snapshot);
+        if (!active) return;
+        setMarketSnapshot(snapshot);
+        markMarketPageSynced();
       })
       .catch((error: unknown) => {
         console.error('加载市场总览失败:', error);
@@ -306,7 +346,7 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [isAuthenticated, viewMode]);
+  }, [isAuthenticated, markMarketPageSynced, shouldReloadMarketPage, viewMode]);
 
   useEffect(() => {
     if (viewMode !== 'market' || !isAuthenticated || !activeMarketCard) {
@@ -328,7 +368,12 @@ export default function Home() {
     }
 
     const timer = window.setInterval(() => {
-      if (isTradingTime()) refreshMarket(enabled, false);
+      if (isTradingTime()) {
+        const current = marketPageLoadMetaRef.current;
+        if (!current || Date.now() - current.lastSyncedAt >= 30_000) {
+          refreshMarket(enabled, false);
+        }
+      }
     }, 30000);
 
     return () => window.clearInterval(timer);

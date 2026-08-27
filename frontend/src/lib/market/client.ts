@@ -154,6 +154,7 @@ async function foxRequestJson<T>(url: string): Promise<T> {
         resolve(body);
       },
       error(error) {
+        console.warn('[market] foxAgentCrossRequest error', error instanceof Error ? error.message : String(error));
         reject(error instanceof Error ? error : new Error(typeof error === 'string' ? error : JSON.stringify(error)));
       },
     });
