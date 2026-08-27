@@ -1,7 +1,13 @@
 import { buildMarketCacheKey, cached, TTL, mapBatches, marketEastmoneyGet, marketGet, marketGetForce } from './client';
 import { asNumber, formatAmount, formatAmountChange, formatChange, normalizeCode, normalizePlateName, yyyymmdd } from './format';
 import { filterTrendPlateUniverse } from './plateFilter';
-import type { MarketPayoffItem, TurnoverMinutePoint, TurnoverSnapshot } from './types';
+import type {
+  IntradayEmotionSnapshot,
+  MarketPayoffItem,
+  ShortEmotionSnapshot,
+  TurnoverMinutePoint,
+  TurnoverSnapshot,
+} from './types';
 import { api } from '../api';
 import { indexedDBCache } from '../indexedDBCache';
 
@@ -187,8 +193,139 @@ export async function loadTurnover(force = false): Promise<TurnoverSnapshot | nu
       previousText: formatAmount(previous),
       changeText: formatAmountChange(change),
       points,
+      emotion: null,
     };
   } catch {
+    return null;
+  }
+}
+
+export async function loadIntradayEmotion(force = false): Promise<IntradayEmotionSnapshot | null> {
+  try {
+    const response = await cached<{
+      success: boolean;
+      data?: {
+        positive_current?: number | null;
+        negative_current?: number | null;
+        index_current?: number | null;
+        points?: Array<{
+          time: string;
+          positive?: number | null;
+          negative?: number | null;
+          index?: number | null;
+        }>;
+      };
+      error?: string;
+    }>(
+      buildMarketCacheKey('loadIntradayEmotion'),
+      TTL.seconds(15),
+      false,
+      async () => {
+        const result = await api.get<{
+          success: boolean;
+          data?: {
+            positive_current?: number | null;
+            negative_current?: number | null;
+            index_current?: number | null;
+            points?: Array<{
+              time: string;
+              positive?: number | null;
+              negative?: number | null;
+              index?: number | null;
+            }>;
+          };
+          error?: string;
+        }>(
+          '/market/emotion/intraday'
+        );
+        return result.data;
+      },
+      { force }
+    );
+    if (!response.success || !response.data) {
+      return null;
+    }
+    return {
+      positiveCurrent: response.data.positive_current ?? null,
+      negativeCurrent: response.data.negative_current ?? null,
+      indexCurrent: response.data.index_current ?? null,
+      points: (response.data.points || []).map((point) => ({
+        time: point.time || '',
+        positive: point.positive ?? null,
+        negative: point.negative ?? null,
+        index: point.index ?? null,
+      })),
+    };
+  } catch (error) {
+    console.warn('[market] loadIntradayEmotion failed', error);
+    return null;
+  }
+}
+
+export async function loadShortEmotion(days = 5, force = false): Promise<ShortEmotionSnapshot | null> {
+  try {
+    const response = await cached<{
+      success: boolean;
+      data?: {
+        latest_value?: number | null;
+        latest_turnover?: number | null;
+        zone?: string;
+        days?: Array<{
+          date: string;
+          points: Array<{
+            time: string;
+            value: number;
+            turnover?: number | null;
+          }>;
+        }>;
+      };
+      error?: string;
+    }>(
+      buildMarketCacheKey('loadShortEmotion', { days }),
+      TTL.minutes(2),
+      true,
+      async () => {
+        const result = await api.get<{
+          success: boolean;
+          data?: {
+            latest_value?: number | null;
+            latest_turnover?: number | null;
+            zone?: string;
+            days?: Array<{
+              date: string;
+              points: Array<{
+                time: string;
+                value: number;
+                turnover?: number | null;
+              }>;
+            }>;
+          };
+          error?: string;
+        }>(
+          `/market/emotion/short?days=${days}`
+        );
+        return result.data;
+      },
+      { force }
+    );
+    if (!response.success || !response.data) {
+      return null;
+    }
+    return {
+      latestValue: response.data.latest_value ?? null,
+      latestTurnover: response.data.latest_turnover ?? null,
+      zone: response.data.zone || '--',
+      days: (response.data.days || []).map((day) => ({
+        date: day.date || '',
+        points: (day.points || []).map((point) => ({
+          time: point.time || '',
+          value: point.value,
+          turnover: point.turnover ?? null,
+        })),
+      })),
+    };
+  } catch (error) {
+    console.warn('[market] loadShortEmotion failed', error);
     return null;
   }
 }

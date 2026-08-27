@@ -33,6 +33,7 @@ const AccountSwitcher = dynamic(() => import('@/components/AccountSwitcher'), { 
 const TurnoverMinuteChart = dynamic(() => import('@/components/TurnoverMinuteChart'), { ssr: false });
 const SectorTrendTrajectory = dynamic(() => import('@/components/SectorTrendTrajectory'), { ssr: false });
 const ShortEmotionChart = dynamic(() => import('@/components/ShortEmotionChart'), { ssr: false });
+const IntradayEmotionChart = dynamic(() => import('@/components/IntradayEmotionChart'), { ssr: false });
 
 type HomeViewMode = 'stock' | 'market' | 'topic';
 
@@ -159,7 +160,7 @@ export default function Home() {
   const [loadedMarketCards, setLoadedMarketCards] = useState<Record<MarketCardLabel, boolean>>(() => ({ ...EMPTY_CARD_DETAILS }));
   const [activeMarketCard, setActiveMarketCard] = useState<MarketCardLabel | null>(null);
   const [selectedEmotionDate, setSelectedEmotionDate] = useState<string | null>(null);
-  const [emotionOverviewMode, setEmotionOverviewMode] = useState<'intraday' | 'short'>('short');
+  const [emotionDetailTab, setEmotionDetailTab] = useState<'ladder' | 'short'>('ladder');
   const [shortEmotionCycle, setShortEmotionCycle] = useState<1 | 3 | 5 | 10 | 20>(5);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const userButtonRef = useRef<HTMLButtonElement>(null);
@@ -252,13 +253,15 @@ export default function Home() {
             };
           }
           if (label === '情绪') {
-            const desiredEmotionDays = activeMarketCard === '情绪' && emotionOverviewMode === 'short' ? shortEmotionCycle : 5;
+            const desiredEmotionDays = activeMarketCard === '情绪' ? shortEmotionCycle : 5;
             const emotion = await loadEmotionSnapshot(desiredEmotionDays, force);
             return {
               label,
               apply: (current: MarketSnapshot): MarketSnapshot => ({
                 ...current,
                 emotionSeries: emotion.emotionSeries,
+                intradayEmotion: emotion.intradayEmotion ?? current.intradayEmotion,
+                shortEmotion: emotion.shortEmotion ?? current.shortEmotion,
                 diagnostics: {
                   ...current.diagnostics,
                   情绪: { facts: emotion.facts },
@@ -315,7 +318,7 @@ export default function Home() {
         return next;
       });
     }
-  }, [activeMarketCard, emotionOverviewMode, markMarketPageSynced, shortEmotionCycle]);
+  }, [activeMarketCard, markMarketPageSynced, shortEmotionCycle]);
 
   useEffect(() => {
     if (viewMode !== 'market' || !isAuthenticated) {
@@ -391,12 +394,15 @@ export default function Home() {
   }, [emotionSeries, selectedEmotionDate]);
 
   useEffect(() => {
-    const desiredEmotionDays = emotionOverviewMode === 'short' ? shortEmotionCycle : 5;
+    const desiredEmotionDays = shortEmotionCycle;
+    const shortReady = emotionSeries.length >= desiredEmotionDays;
+    const intradayReady = (marketSnapshot.intradayEmotion?.points.length || 0) > 0;
+    const shortEmotionReady = (marketSnapshot.shortEmotion?.days.length || 0) >= Math.min(desiredEmotionDays, 1);
     if (
       viewMode !== 'market' ||
       !isAuthenticated ||
       activeMarketCard !== '情绪' ||
-      emotionSeries.length >= desiredEmotionDays
+      (shortReady && intradayReady && shortEmotionReady)
     ) {
       return;
     }
@@ -404,10 +410,12 @@ export default function Home() {
     let active = true;
     loadEmotionSnapshot(desiredEmotionDays)
       .then((emotionSnapshot) => {
-        if (!active || emotionSnapshot.emotionSeries.length === 0) return;
+        if (!active) return;
         setMarketSnapshot((current) => ({
           ...current,
-          emotionSeries: emotionSnapshot.emotionSeries,
+          emotionSeries: emotionSnapshot.emotionSeries.length > 0 ? emotionSnapshot.emotionSeries : current.emotionSeries,
+          intradayEmotion: emotionSnapshot.intradayEmotion ?? current.intradayEmotion,
+          shortEmotion: emotionSnapshot.shortEmotion ?? current.shortEmotion,
           diagnostics: {
             ...current.diagnostics,
             情绪: {
@@ -424,7 +432,7 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [activeMarketCard, emotionOverviewMode, emotionSeries.length, isAuthenticated, shortEmotionCycle, viewMode]);
+  }, [activeMarketCard, emotionSeries.length, isAuthenticated, marketSnapshot.intradayEmotion, marketSnapshot.shortEmotion, shortEmotionCycle, viewMode]);
 
   // 处理点击外部关闭菜单
   useEffect(() => {
@@ -849,47 +857,57 @@ export default function Home() {
                       <div className="rounded-[24px] border border-border/70 bg-background/70 p-5">
                         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                           <div>
+                            <div className="text-sm font-semibold text-foreground">盘中情绪</div>
+                            <div className="mt-1 text-xs text-muted-foreground">观察盘中正负情绪强弱变化。</div>
+                          </div>
+                        </div>
+                        <div className="mt-4">
+                          <IntradayEmotionChart data={marketSnapshot.intradayEmotion} />
+                        </div>
+                      </div>
+
+                      <div className="rounded-[24px] border border-border/70 bg-background/70 p-5">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0">
                             <div className="text-sm font-semibold text-foreground">
-                              {emotionOverviewMode === 'intraday' ? '盘中情绪' : '连板天梯'}
+                              {emotionDetailTab === 'ladder' ? '连板天梯' : '短线情绪'}
                             </div>
                             <div className="mt-1 text-xs text-muted-foreground">
-                              {emotionOverviewMode === 'intraday'
-                                ? '跟踪盘中情绪波动节奏。'
-                                : `观察近${shortEmotionCycle}日连板高度变化。`}
+                              {emotionDetailTab === 'ladder'
+                                ? `观察近${shortEmotionCycle}日连板高度变化。`
+                                : `观察近${shortEmotionCycle}日短线情绪强弱变化。`}
                             </div>
                           </div>
                           <div className="flex items-center justify-end gap-3 self-start">
-                            {emotionOverviewMode === 'short' ? (
-                              <div className="inline-flex rounded-full border border-border/60 bg-background/80 p-1">
-                                {([1, 3, 5, 10, 20] as const).map((cycle) => {
-                                  const active = shortEmotionCycle === cycle;
-                                  return (
-                                    <button
-                                      key={cycle}
-                                      type="button"
-                                      onClick={() => setShortEmotionCycle(cycle)}
-                                      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                                        active ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'
-                                      }`}
-                                    >
-                                      {cycle}日
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            ) : null}
-                            <div className="inline-flex rounded-full border border-border/60 bg-muted/20 p-1">
+                            <div className="inline-flex rounded-full border border-border/60 bg-background/80 p-1">
+                              {([1, 3, 5, 10, 20] as const).map((cycle) => {
+                                const active = shortEmotionCycle === cycle;
+                                return (
+                                  <button
+                                    key={cycle}
+                                    type="button"
+                                    onClick={() => setShortEmotionCycle(cycle)}
+                                    className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                                      active ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'
+                                    }`}
+                                  >
+                                    {cycle}日
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="inline-flex rounded-full border border-border/60 bg-background/80 p-1">
                               {[
-                                { key: 'intraday', label: '盘中情绪' },
-                                { key: 'short', label: '连板天梯' },
+                                { key: 'short', label: '短线情绪' },
+                                { key: 'ladder', label: '连板天梯' },
                               ].map((item) => {
-                                const active = emotionOverviewMode === item.key;
+                                const active = emotionDetailTab === item.key;
                                 return (
                                   <button
                                     key={item.key}
                                     type="button"
-                                    onClick={() => setEmotionOverviewMode(item.key as 'intraday' | 'short')}
-                                    className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                                    onClick={() => setEmotionDetailTab(item.key as 'ladder' | 'short')}
+                                    className={`rounded-full px-4 py-1.5 text-xs font-medium transition-colors ${
                                       active ? 'bg-orange-500 text-white' : 'text-muted-foreground hover:text-foreground'
                                     }`}
                                   >
@@ -902,9 +920,10 @@ export default function Home() {
                         </div>
                         <div className="mt-4">
                           <ShortEmotionChart
-                            mode={emotionOverviewMode}
+                            mode={emotionDetailTab}
                             cycle={shortEmotionCycle}
                             series={emotionSeries}
+                            shortEmotion={marketSnapshot.shortEmotion}
                             selectedDate={selectedEmotionDate}
                             onSelectDate={setSelectedEmotionDate}
                             onSelectStock={handleSelectMarketStock}

@@ -77,6 +77,38 @@ export type TurnoverMinutePoint = {
   yesterday: number | null;
 };
 
+export type IntradayEmotionPoint = {
+  time: string;
+  positive: number | null;
+  negative: number | null;
+  index: number | null;
+};
+
+export type IntradayEmotionSnapshot = {
+  positiveCurrent: number | null;
+  negativeCurrent: number | null;
+  indexCurrent: number | null;
+  points: IntradayEmotionPoint[];
+};
+
+export type ShortEmotionMinutePoint = {
+  time: string;
+  value: number;
+  turnover: number | null;
+};
+
+export type ShortEmotionDay = {
+  date: string;
+  points: ShortEmotionMinutePoint[];
+};
+
+export type ShortEmotionSnapshot = {
+  latestValue: number | null;
+  latestTurnover: number | null;
+  zone: string;
+  days: ShortEmotionDay[];
+};
+
 export type TurnoverSnapshot = {
   current: number | null;
   predict: number | null;
@@ -87,6 +119,7 @@ export type TurnoverSnapshot = {
   previousText: string;
   changeText: string;
   points: TurnoverMinutePoint[];
+  emotion: IntradayEmotionSnapshot | null;
 };
 
 export type MarketTrendStage = '主升' | '发酵' | '分歧' | '震荡' | '退潮' | '冷却';
@@ -140,11 +173,13 @@ export type MarketTrendPanelData = {
 export type MarketSnapshot = {
   diagnostics: Record<MarketCardLabel, MarketCardData>;
   emotionSeries: MarketEmotionPoint[];
+  intradayEmotion: IntradayEmotionSnapshot | null;
   payoffLists: {
     strong: MarketPayoffItem[];
     hot: MarketPayoffItem[];
     bigface: MarketPayoffItem[];
   };
+  shortEmotion: ShortEmotionSnapshot | null;
   mainlineLanes: MarketMainlineLane[];
   turnover: TurnoverSnapshot | null;
   sectorTrend: MarketTrendPanelData;
@@ -158,11 +193,13 @@ export const DEFAULT_MARKET_SNAPSHOT: MarketSnapshot = {
     赚钱效应: { facts: ['强势股 --', '热榜股 --', '大面代表 --'] },
   },
   emotionSeries: [],
+  intradayEmotion: null,
   payoffLists: {
     strong: [],
     hot: [],
     bigface: [],
   },
+  shortEmotion: null,
   mainlineLanes: [],
   turnover: null,
   sectorTrend: {

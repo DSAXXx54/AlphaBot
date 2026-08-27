@@ -1,4 +1,17 @@
-import { loadBigFace, loadHot, loadPlateUniverse, loadPlates, loadStrong, loadSurgeLimitUp, loadTopicPools, loadTradingDays, loadTurnover, type TopicStock } from './api';
+import {
+  loadBigFace,
+  loadHot,
+  loadIntradayEmotion,
+  loadPlateUniverse,
+  loadPlates,
+  loadShortEmotion,
+  loadStrong,
+  loadSurgeLimitUp,
+  loadTopicPools,
+  loadTradingDays,
+  loadTurnover,
+  type TopicStock,
+} from './api';
 import { clearMarketCache } from './client';
 import { formatPlateFlow, formatShortDate, matchPlate, normalizeCode } from './format';
 import { buildSectorTrendData } from './sectorTrend';
@@ -23,6 +36,8 @@ const FULL_EMOTION_DAYS = 20;
 
 export type MarketEmotionSnapshot = {
   emotionSeries: MarketEmotionPoint[];
+  intradayEmotion: MarketSnapshot['intradayEmotion'];
+  shortEmotion: MarketSnapshot['shortEmotion'];
   facts: string[];
 };
 
@@ -335,7 +350,11 @@ async function loadLatestMarketContext(force = false): Promise<LatestMarketConte
 }
 
 async function buildEmotionSnapshot(limit: number, force = false): Promise<MarketEmotionSnapshot> {
-  const tradingDays = await loadTradingDays(limit, force);
+  const [tradingDays, intradayEmotion, shortEmotion] = await Promise.all([
+    loadTradingDays(limit, force),
+    loadIntradayEmotion(force),
+    loadShortEmotion(limit, force),
+  ]);
   const pools =
     tradingDays.length > 0
       ? await loadTopicPools(tradingDays, force)
@@ -356,6 +375,8 @@ async function buildEmotionSnapshot(limit: number, force = false): Promise<Marke
 
   return {
     emotionSeries,
+    intradayEmotion,
+    shortEmotion,
     facts: emotionFacts(emotionSeries),
   };
 }

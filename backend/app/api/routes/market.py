@@ -2,6 +2,7 @@ from datetime import date
 
 from fastapi import APIRouter, Query
 
+from app.services.market_emotion_service import MarketEmotionService
 from app.services.trading_calendar_service import TradingCalendarService
 from app.utils.response import api_response
 
@@ -30,3 +31,15 @@ async def get_trading_calendar(
             "latest_trading_day": latest,
         }
     )
+
+
+@router.get("/emotion/intraday", response_model=dict)
+async def get_intraday_emotion():
+    data = await MarketEmotionService.get_intraday_emotion()
+    return api_response(data=data)
+
+
+@router.get("/emotion/short", response_model=dict)
+async def get_short_emotion(days: int = Query(5, ge=1, le=20)):
+    data = await MarketEmotionService.get_short_emotion(days)
+    return api_response(data=data)
