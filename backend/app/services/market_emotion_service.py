@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
@@ -10,6 +11,11 @@ import httpx
 class MarketEmotionService:
     BASE_URL = "http://hot.icfqs.com:7615"
     TIMEOUT = 10.0
+    INTRADAY_TTL = 15.0
+    SHORT_TTL = 120.0
+    _cache: dict[str, tuple[float, dict[str, Any]]] = {}
+    _inflight: dict[str, asyncio.Task[dict[str, Any]]] = {}
+    _cache_lock = asyncio.Lock()
 
     @classmethod
     async def _call_tqlex(cls, entry: str, payload: Any) -> dict[str, Any]:
@@ -89,7 +95,38 @@ class MarketEmotionService:
         return f"{hour:02d}:{minute:02d}"
 
     @classmethod
-    async def get_intraday_emotion(cls) -> dict[str, Any]:
+    async def _remember(
+        cls,
+        key: str,
+        ttl_seconds: float,
+        loader: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        now = asyncio.get_running_loop().time()
+        async with cls._cache_lock:
+            cached = cls._cache.get(key)
+            if cached and cached[0] > now:
+                return cached[1]
+            inflight = cls._inflight.get(key)
+            if inflight is None:
+                inflight = asyncio.create_task(loader())
+                cls._inflight[key] = inflight
+
+        try:
+            data = await inflight
+        except Exception:
+            async with cls._cache_lock:
+                if cls._inflight.get(key) is inflight:
+                    cls._inflight.pop(key, None)
+            raise
+
+        async with cls._cache_lock:
+            cls._cache[key] = (asyncio.get_running_loop().time() + ttl_seconds, data)
+            if cls._inflight.get(key) is inflight:
+                cls._inflight.pop(key, None)
+        return data
+
+    @classmethod
+    async def _load_intraday_emotion(cls) -> dict[str, Any]:
         result = await cls._call_tqlex(
             "HQServ.hq_nlp_dxqx",
             [{"ReqId": "200260", "modname": "mod_dxqx.dll"}],
@@ -114,7 +151,11 @@ class MarketEmotionService:
         }
 
     @classmethod
-    async def get_short_emotion(cls, trade_days: int = 5) -> dict[str, Any]:
+    async def get_intraday_emotion(cls) -> dict[str, Any]:
+        return await cls._remember("intraday", cls.INTRADAY_TTL, cls._load_intraday_emotion)
+
+    @classmethod
+    async def _load_short_emotion(cls, trade_days: int = 5) -> dict[str, Any]:
         safe_days = max(1, min(int(trade_days or 5), 20))
         end_date = datetime.now().strftime("%Y%m%d")
         page_size = 5
@@ -195,3 +236,12 @@ class MarketEmotionService:
             "latest_turnover": latest_turnover,
             "zone": cls._emotion_zone(latest_value),
         }
+
+    @classmethod
+    async def get_short_emotion(cls, trade_days: int = 5) -> dict[str, Any]:
+        safe_days = max(1, min(int(trade_days or 5), 20))
+        return await cls._remember(
+            f"short:{safe_days}",
+            cls.SHORT_TTL,
+            lambda: cls._load_short_emotion(safe_days),
+        )

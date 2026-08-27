@@ -14,6 +14,28 @@ function yFor(value: number, min: number, max: number, top: number, bottom: numb
   return bottom - ((bottom - top) * (value - min)) / (max - min);
 }
 
+function nearestIndex(targetX: number, positions: number[]) {
+  let bestIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  positions.forEach((position, index) => {
+    const distance = Math.abs(position - targetX);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  return bestIndex;
+}
+
+function minuteSlot(time: string) {
+  const [hourText, minuteText] = time.split(':');
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return 0;
+  if (hour < 12) return (hour * 60 + minute) - (9 * 60 + 30);
+  return 120 + (hour * 60 + minute) - (13 * 60);
+}
+
 function findLastCross(points: Array<{ positive: number | null; negative: number | null }>) {
   for (let index = points.length - 1; index > 0; index -= 1) {
     const current = points[index];
@@ -40,6 +62,8 @@ function findLastCross(points: Array<{ positive: number | null; negative: number
 
 export default function IntradayEmotionChart({ data }: IntradayEmotionChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [hoverSeries, setHoverSeries] = useState<'positive' | 'negative'>('positive');
+  const [hoverPointer, setHoverPointer] = useState<{ x: number; y: number } | null>(null);
   const chart = useMemo(() => {
     const points = (data?.points || []).filter((point) => point.time);
     const values = points
@@ -62,8 +86,11 @@ export default function IntradayEmotionChart({ data }: IntradayEmotionChartProps
   const top = 26;
   const bottom = 274;
   const { points, min, max, cross } = chart;
-  const xFor = (index: number) =>
-    points.length === 1 ? (left + right) / 2 : left + ((right - left) * index) / (points.length - 1);
+  const xFor = (index: number) => {
+    const slot = Math.max(0, Math.min(239, minuteSlot(points[index]?.time || '09:30')));
+    return left + ((right - left) * slot) / 239;
+  };
+  const xPositions = points.map((_, index) => xFor(index));
   const positivePath = points
     .map((point, index) =>
       point.positive == null ? null : `${index === 0 || points[index - 1]?.positive == null ? 'M' : 'L'} ${xFor(index)} ${yFor(point.positive, min, max, top, bottom)}`
@@ -84,23 +111,36 @@ export default function IntradayEmotionChart({ data }: IntradayEmotionChartProps
   const labelY = cross && labelPoint ? yFor(labelPoint[cross.type] || 0, min, max, top, bottom) : 0;
   const hovered = hoverIndex != null ? points[hoverIndex] : null;
   const hoveredX = hoverIndex != null ? xFor(hoverIndex) : null;
+  const hoveredPositiveY = hoverIndex != null && hovered?.positive != null ? yFor(hovered.positive, min, max, top, bottom) : null;
+  const hoveredNegativeY = hoverIndex != null && hovered?.negative != null ? yFor(hovered.negative, min, max, top, bottom) : null;
   const hoveredY =
-    hoverIndex != null && hovered
-      ? yFor(
-          hovered.positive ?? hovered.negative ?? 0,
-          min,
-          max,
-          top,
-          bottom
-        )
-      : null;
+    hoverSeries === 'positive' ? hoveredPositiveY ?? hoveredNegativeY : hoveredNegativeY ?? hoveredPositiveY;
 
   const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    const ratio = (event.clientX - rect.left) / rect.width;
-    const nextIndex = Math.round(ratio * (points.length - 1));
-    setHoverIndex(Math.max(0, Math.min(points.length - 1, nextIndex)));
+    const pointerX = event.clientX - rect.left;
+    const pointerY = event.clientY - rect.top;
+    const svgX = ((event.clientX - rect.left) / rect.width) * width;
+    const svgY = ((event.clientY - rect.top) / rect.height) * height;
+    const nextIndex = nearestIndex(svgX, xPositions);
+    const point = points[nextIndex];
+    const positiveY = point.positive != null ? yFor(point.positive, min, max, top, bottom) : null;
+    const negativeY = point.negative != null ? yFor(point.negative, min, max, top, bottom) : null;
+    if (positiveY != null && negativeY != null) {
+      setHoverSeries(Math.abs(svgY - positiveY) <= Math.abs(svgY - negativeY) ? 'positive' : 'negative');
+    } else if (positiveY != null) {
+      setHoverSeries('positive');
+    } else if (negativeY != null) {
+      setHoverSeries('negative');
+    }
+    setHoverIndex(nextIndex);
+    setHoverPointer({ x: pointerX, y: pointerY });
   };
+
+  const tooltipWidth = 190;
+  const tooltipHeight = 92;
+  const tooltipLeft = hoverPointer ? Math.min(Math.max(hoverPointer.x + 14, 12), 1000) : 12;
+  const tooltipTop = hoverPointer ? Math.max(10, hoverPointer.y - tooltipHeight - 14) : 10;
 
   return (
     <div className="px-3 pb-3 pt-2">
@@ -119,9 +159,13 @@ export default function IntradayEmotionChart({ data }: IntradayEmotionChartProps
       <div className="relative">
         <svg
           viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
           className="h-[320px] w-full"
           onPointerMove={handlePointerMove}
-          onPointerLeave={() => setHoverIndex(null)}
+          onPointerLeave={() => {
+            setHoverIndex(null);
+            setHoverPointer(null);
+          }}
         >
           {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
             const value = min + (max - min) * ratio;
@@ -155,6 +199,16 @@ export default function IntradayEmotionChart({ data }: IntradayEmotionChartProps
               ) : null}
             </>
           ) : null}
+          {hovered && hoveredX != null ? (
+            <>
+              {hovered.positive != null && hoveredPositiveY != null ? (
+                <circle cx={hoveredX} cy={hoveredPositiveY} r="4.8" fill="rgba(239,68,68,1)" stroke="white" strokeWidth="1.5" />
+              ) : null}
+              {hovered.negative != null && hoveredNegativeY != null ? (
+                <circle cx={hoveredX} cy={hoveredNegativeY} r="4.8" fill="rgba(250,204,21,1)" stroke="white" strokeWidth="1.5" />
+              ) : null}
+            </>
+          ) : null}
           {points.map((point, index) =>
             tickTimes.has(point.time) || index === 0 || index === points.length - 1 ? (
               <text key={point.time} x={xFor(index)} y="296" textAnchor="middle" fontSize="11" fill="currentColor" opacity="0.68">
@@ -175,7 +229,7 @@ export default function IntradayEmotionChart({ data }: IntradayEmotionChartProps
                 transform="scale(0.78)"
                 fill={cross.type === 'positive' ? 'rgba(239,68,68,0.96)' : 'rgba(250,204,21,0.96)'}
               />
-              <text x="0" y="-3" textAnchor="middle" fontSize="9" fontWeight="700" fill="#ffffff">
+              <text x="0" y="-2" textAnchor="middle" dominantBaseline="middle" fontSize="9" fontWeight="700" fill="#ffffff">
                 {Number(labelPoint[cross.type] || 0).toFixed(0)}
               </text>
             </g>
@@ -185,8 +239,9 @@ export default function IntradayEmotionChart({ data }: IntradayEmotionChartProps
           <div
             className="pointer-events-none absolute z-20 rounded-xl border px-4 py-3 text-sm shadow-[0_12px_28px_rgba(15,23,42,0.25)] backdrop-blur-md"
             style={{
-              left: `${Math.min((hoveredX / width) * 100 + 2, 76)}%`,
-              top: '10px',
+              left: `min(${tooltipLeft}px, calc(100% - ${tooltipWidth}px - 12px))`,
+              top: `${tooltipTop}px`,
+              maxWidth: `${tooltipWidth}px`,
               backgroundColor: 'rgba(15, 23, 42, 0.82)',
               borderColor: 'rgba(255,255,255,0.10)',
               color: '#f8fafc',

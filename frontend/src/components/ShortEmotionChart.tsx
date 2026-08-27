@@ -21,6 +21,19 @@ function yFor(value: number, min: number, max: number, top: number, bottom: numb
   return bottom - ((bottom - top) * (value - min)) / (max - min);
 }
 
+function nearestIndex(targetX: number, positions: number[]) {
+  let bestIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  positions.forEach((position, index) => {
+    const distance = Math.abs(position - targetX);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  return bestIndex;
+}
+
 function formatDateLabel(date: string) {
   if (!date || date.length !== 8) return date;
   return `${date.slice(4, 6)}/${date.slice(6, 8)}`;
@@ -74,6 +87,7 @@ export default function ShortEmotionChart({
   onSelectStock,
 }: ShortEmotionChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [hoverPointer, setHoverPointer] = useState<{ x: number; y: number } | null>(null);
   const shortChart = useMemo(() => {
     const days = (shortEmotion?.days || []).slice(-Math.min(cycle, shortEmotion?.days.length || 0));
     const merged = days.flatMap((day) =>
@@ -134,6 +148,7 @@ export default function ShortEmotionChart({
       const slot = Math.max(0, Math.min(239, minuteSlot(point.time)));
       return left + dayWidth * dayIndex + (dayWidth * slot) / 239;
     };
+    const xPositions = merged.map((_, index) => xFor(index));
     const yForValue = (value: number) => yFor(value, shortChart.min, shortChart.max, topLine, bottomLine);
     const segmentPaths = buildSegmentPaths(merged, xFor, yForValue);
     const hovered = hoverIndex != null ? merged[hoverIndex] : null;
@@ -142,10 +157,17 @@ export default function ShortEmotionChart({
 
     const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
       const rect = event.currentTarget.getBoundingClientRect();
-      const ratio = (event.clientX - rect.left) / rect.width;
-      const nextIndex = Math.round(ratio * (merged.length - 1));
-      setHoverIndex(Math.max(0, Math.min(merged.length - 1, nextIndex)));
+      const pointerX = event.clientX - rect.left;
+      const pointerY = event.clientY - rect.top;
+      const svgX = ((event.clientX - rect.left) / rect.width) * width;
+      setHoverIndex(nearestIndex(svgX, xPositions));
+      setHoverPointer({ x: pointerX, y: pointerY });
     };
+
+    const tooltipWidth = 220;
+    const tooltipHeight = 92;
+    const tooltipLeft = hoverPointer ? Math.min(Math.max(hoverPointer.x + 14, 12), 1000) : 12;
+    const tooltipTop = hoverPointer ? Math.max(10, hoverPointer.y - tooltipHeight - 14) : 10;
 
     return (
       <div className="px-3 pb-3 pt-2">
@@ -164,9 +186,13 @@ export default function ShortEmotionChart({
         <div className="relative">
           <svg
             viewBox={`0 0 ${width} ${height}`}
+            preserveAspectRatio="none"
             className="h-[320px] w-full"
             onPointerMove={handlePointerMove}
-            onPointerLeave={() => setHoverIndex(null)}
+            onPointerLeave={() => {
+              setHoverIndex(null);
+              setHoverPointer(null);
+            }}
           >
             {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
               const value = shortChart.min + (shortChart.max - shortChart.min) * ratio;
@@ -221,14 +247,16 @@ export default function ShortEmotionChart({
               const barY = bottomBar - barHeight;
               const barColor =
                 point.value > 0 ? 'rgba(249,115,22,0.38)' : point.value < 0 ? 'rgba(250,204,21,0.45)' : 'rgba(148,163,184,0.28)';
-              const showDate = point.isDayStart && point.date !== latest.date;
+              const showDate = point.isDayStart;
+              const showTime = point.date === latest.date
+                && (point.time === '09:30' || point.time === '10:30' || point.time === '13:00' || point.time === '14:00');
               return (
                 <g key={point.xLabel}>
-                  {(point.time === '09:30' || point.time === '10:30' || point.time === '13:00' || point.time === '14:00') ? (
+                  {showTime ? (
                     <line x1={xFor(index)} y1={topLine} x2={xFor(index)} y2={bottomLine} stroke="rgba(148,163,184,0.16)" strokeDasharray="3 4" />
                   ) : null}
                   <rect x={xFor(index) - 1.25} y={barY} width="2.5" height={barHeight} fill={barColor} />
-                  {showDate ? (
+                  {showDate && point.date !== latest.date ? (
                     <text x={xFor(index)} y="307" textAnchor="middle" fontSize="10" fill="currentColor" opacity="0.6">
                       {formatDateLabel(point.date)}
                     </text>
@@ -250,7 +278,7 @@ export default function ShortEmotionChart({
             {shortChart.maxPoint ? (
               <g transform={`translate(${xFor(shortChart.maxPointIndex)}, ${yForValue(shortChart.maxPoint.value) - 24})`}>
                 <path d={PIN_PATH} transform="scale(0.78)" fill="rgba(239,68,68,0.96)" />
-                <text x="0" y="-3" textAnchor="middle" fontSize="9" fontWeight="700" fill="#ffffff">
+                <text x="0" y="-2" textAnchor="middle" dominantBaseline="middle" fontSize="9" fontWeight="700" fill="#ffffff">
                   {shortChart.maxPoint.value.toFixed(2)}
                 </text>
               </g>
@@ -258,13 +286,13 @@ export default function ShortEmotionChart({
             {shortChart.minPoint ? (
               <g transform={`translate(${xFor(shortChart.minPointIndex)}, ${yForValue(shortChart.minPoint.value) - 24})`}>
                 <path d={PIN_PATH} transform="scale(0.78)" fill="rgba(34,197,94,0.96)" />
-                <text x="0" y="-3" textAnchor="middle" fontSize="9" fontWeight="700" fill="#ffffff">
+                <text x="0" y="-2" textAnchor="middle" dominantBaseline="middle" fontSize="9" fontWeight="700" fill="#ffffff">
                   {shortChart.minPoint.value.toFixed(2)}
                 </text>
               </g>
             ) : null}
             {merged.map((point, index) =>
-              (point.time === '09:30' || point.time === '10:30' || point.time === '13:00' || point.time === '14:00') ? (
+              point.date === latest.date && (point.time === '09:30' || point.time === '10:30' || point.time === '13:00' || point.time === '14:00') ? (
                 <text
                   key={`${point.date}-${point.time}`}
                   x={xFor(index)}
@@ -283,8 +311,9 @@ export default function ShortEmotionChart({
             <div
               className="pointer-events-none absolute z-20 rounded-xl border px-4 py-3 text-sm shadow-[0_12px_28px_rgba(15,23,42,0.25)] backdrop-blur-md"
               style={{
-                left: `${Math.min((hoveredX / width) * 100 + 2, 74)}%`,
-                top: '10px',
+                left: `min(${tooltipLeft}px, calc(100% - ${tooltipWidth}px - 12px))`,
+                top: `${tooltipTop}px`,
+                maxWidth: `${tooltipWidth}px`,
                 backgroundColor: 'rgba(15, 23, 42, 0.82)',
                 borderColor: 'rgba(255,255,255,0.10)',
                 color: '#f8fafc',
