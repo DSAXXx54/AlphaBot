@@ -170,7 +170,8 @@ export async function loadTurnover(force = false): Promise<TurnoverSnapshot | nu
     const current = Number(last[1]);
     const previous = last[2] == null ? null : Number(last[2]);
     const predict = Number(charts.header?.find((item) => item.key === 'predict_turnover')?.val) || 0;
-    const change = predict - (previous || 0);
+    const rawChange = last[3] == null ? null : Number(last[3]);
+    const change = rawChange == null ? current - (previous || 0) : rawChange;
     const points: TurnoverMinutePoint[] = pointList.map((point, index) => ({
       time: labels[index] || '',
       today: point?.[1] == null ? null : Number(point[1]),
@@ -193,7 +194,7 @@ export async function loadTurnover(force = false): Promise<TurnoverSnapshot | nu
 }
 
 function plateListUrl(fid: 'f62' | 'f3' | 'f6', po: 0 | 1, pz = 100) {
-  return `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=${fid}&fs=${encodeURIComponent('m:90+t:3')}&fields=f2,f3,f6,f12,f14,f62,f104,f105,f106&pn=1&pz=${pz}&po=${po}&cb=__em`;
+  return `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=${fid}&fs=${encodeURIComponent('m:90+t:2')}&fields=f2,f3,f6,f12,f14,f62,f104,f105,f106&pn=1&pz=${pz}&po=${po}&cb=__em`;
 }
 
 function parsePlateList(payload: ClistResponse | null | undefined): PlateFlow[] {
@@ -569,7 +570,7 @@ export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
 
   for (let page = 1; page < 100; page += 1) {
     const url = `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(
-      'm:90+t:3'
+      'm:90+t:2'
     )}&fields=f12,f14&pn=${page}&pz=${pageSize}&po=1&cb=__em`;
 
     try {
