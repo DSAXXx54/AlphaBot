@@ -1288,23 +1288,6 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                   阶段涨跌 {formatPercent(selectedTopic.changePct)}
                 </span>
               </div>
-              {selectedTopic.highlightedStocks.length > 0 ? (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {selectedTopic.highlightedStocks.map((stock) => (
-                    <button
-                      key={`${selectedTopic.id}-${stock.code}`}
-                      type="button"
-                      onClick={() => onSelectStock?.(stock.code, stock.name)}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/20 px-2 py-0.5 text-xs text-foreground hover:border-orange-300 hover:text-orange-600"
-                    >
-                      <span>{stock.name}</span>
-                      <span className="rounded-full bg-orange-100 px-1.5 py-0.5 text-[10px] text-orange-700 dark:bg-orange-950/30 dark:text-orange-300">
-                        {boardHeightLabel(stock.lbc)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
             </div>
 
             <div className="grid w-full gap-3 text-sm sm:grid-cols-3 xl:max-w-[380px]">

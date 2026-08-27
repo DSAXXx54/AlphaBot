@@ -1,5 +1,5 @@
 import type { MarketTrendPanelData, MarketTrendStage, MarketTrendTopic, MarketTrendStockTag } from './types';
-import type { PlateFlow, SurgeLimitStock, TopicStock } from './api';
+import { stockConcepts, type PlateFlow, type SurgeLimitStock, type TopicStock } from './api';
 import { isoDate, matchPlate, normalizeCode, normalizePlateName } from './format';
 import { getTrendPlateWeight } from './plateFilter';
 
@@ -59,22 +59,31 @@ function inferPhase(score: number): MarketTrendStage {
   return '冷却';
 }
 
+function stockInPlate(stock: TopicStock, plate: PlateFlow): boolean {
+  return stockConcepts(stock).some(
+    (name) => matchPlate([plate], name)?.code === plate.code || normalizePlateName(name) === normalizePlateName(plate.name)
+  );
+}
+
 function ztCountForPlate(plate: PlateFlow, ztList: TopicStock[], surge: SurgeLimitStock[]): number {
-  const byReason = ztList.filter(
-    (stock) => matchPlate([plate], stock.reason)?.code === plate.code || normalizePlateName(stock.reason) === normalizePlateName(plate.name)
-  ).length;
+  const byConcept = ztList.filter((stock) => stockInPlate(stock, plate)).length;
   const bySurge = surge.filter((stock) =>
     stock.plates.some((name) => name === plate.name || matchPlate([plate], name)?.code === plate.code)
   ).length;
-  return Math.max(byReason, bySurge);
+  return Math.max(byConcept, bySurge);
 }
 
 function highlightedStocksForPlate(plate: PlateFlow, ztList: TopicStock[]): MarketTrendTopic['highlightedStocks'] {
+  const seen = new Set<string>();
   return ztList
-    .filter(
-      (stock) => matchPlate([plate], stock.reason)?.code === plate.code || normalizePlateName(stock.reason) === normalizePlateName(plate.name)
-    )
+    .filter((stock) => stockInPlate(stock, plate))
     .sort((a, b) => b.lbc - a.lbc || a.time - b.time)
+    .filter((stock) => {
+      const code = normalizeCode(stock.code) || stock.name;
+      if (seen.has(code)) return false;
+      seen.add(code);
+      return true;
+    })
     .slice(0, 8)
     .map((stock) => ({
       code: normalizeCode(stock.code),
@@ -90,7 +99,7 @@ function pickCandidatePlates(plates: PlateFlow[], ztList: TopicStock[], surge: S
     matched.set(plate.code, plate);
   };
 
-  ztList.forEach((stock) => push(matchPlate(plates, stock.reason || '')));
+  ztList.forEach((stock) => stockConcepts(stock).forEach((name) => push(matchPlate(plates, name))));
   surge.forEach((stock) => stock.plates.forEach((name) => push(matchPlate(plates, name))));
 
   const weightedFlow = (plate: PlateFlow) => plate.netFlow * getTrendPlateWeight(plate.name);

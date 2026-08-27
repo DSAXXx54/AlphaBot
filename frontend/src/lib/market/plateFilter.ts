@@ -55,6 +55,18 @@ const EXCLUDE_EXACT = new Set(
     '中特估',
     '新能源',
     '红利股',
+    '融资融券',
+    '融资融券标的',
+    '转融券标的',
+    '深股通',
+    '机构重仓',
+    '基金重仓',
+    '社保重仓',
+    '养老金',
+    'QFII重仓',
+    '转债标的',
+    '含可转债',
+    '百元股',
   ].map((name) => normalizePlateName(name))
 );
 
@@ -88,9 +100,13 @@ const EXCLUDE_PATTERNS = [
   /标普/,
   /沪股通/,
   /做市/,
+  /股通/,
+  /重仓/,
+  /持股/,
+  /转债/,
 ];
 
-const DEWEIGHT_PATTERNS = [/参股/, /改革/, /自贸/, /振兴/, /风格/, /股权/];
+const DEWEIGHT_PATTERNS = [/参股/, /自贸/, /振兴/];
 
 const WHITELIST_EXACT = new Set(['券商概念', '互联网金融'].map((name) => normalizePlateName(name)));
 

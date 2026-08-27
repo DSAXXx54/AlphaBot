@@ -25,7 +25,10 @@ export type PlateFlow = {
 export type TopicStock = {
   name: string;
   code: string;
+  /** 东财 hybk 行业名（常被截断），仅作展示 */
   reason: string;
+  /** 选股宝概念标签，参与板块逻辑；缺省时回退 reason */
+  concepts?: string[];
   lbc: number;
   time: number;
   type: 'zt' | 'zb' | 'dt';
@@ -48,6 +51,13 @@ export type SurgeLimitStock = {
   name: string;
   plates: string[];
   analysis?: string;
+};
+
+export type XgbLimitUpStock = {
+  code: string;
+  name: string;
+  plates: string[];
+  plateReasons?: string[];
 };
 
 type ClistItem = {
@@ -76,6 +86,8 @@ type TurnoverCharts = {
 };
 
 const EM_UT = '7eea3edcaed734bea9cbfc24409ed989';
+/** 板块宇宙：东财概念板块（m:90+t:3） */
+const EM_CONCEPT_FS = 'm:90+t:3';
 const LIST_LIMIT = 8;
 const PLATE_SAMPLE_SIZE = 100;
 
@@ -331,7 +343,7 @@ export async function loadShortEmotion(days = 5, force = false): Promise<ShortEm
 }
 
 function plateListUrl(fid: 'f62' | 'f3' | 'f6', po: 0 | 1, pz = 100) {
-  return `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=${fid}&fs=${encodeURIComponent('m:90+t:2')}&fields=f2,f3,f6,f12,f14,f62,f104,f105,f106&pn=1&pz=${pz}&po=${po}&cb=__em`;
+  return `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=${fid}&fs=${encodeURIComponent(EM_CONCEPT_FS)}&fields=f2,f3,f6,f12,f14,f62,f104,f105,f106&pn=1&pz=${pz}&po=${po}&cb=__em`;
 }
 
 function parsePlateList(payload: ClistResponse | null | undefined): PlateFlow[] {
@@ -388,14 +400,14 @@ export async function loadPlateFlows(force = false): Promise<{ inflow: PlateFlow
         TTL.minutes(2),
         true,
         force,
-        buildMarketCacheKey('loadPlateFlows', { direction: 'inflow' })
+        buildMarketCacheKey('loadPlateFlows', { direction: 'inflow', board: 't3' })
       ),
       marketLoad<ClistResponse>(
         plateListUrl('f62', 0),
         TTL.minutes(2),
         true,
         force,
-        buildMarketCacheKey('loadPlateFlows', { direction: 'outflow' })
+        buildMarketCacheKey('loadPlateFlows', { direction: 'outflow', board: 't3' })
       ),
     ]);
     return {
@@ -421,14 +433,14 @@ export async function loadPlateUniverse(options?: {
       TTL.minutes(2),
       true,
       force,
-      buildMarketCacheKey('loadPlateUniverse', { metric: 'netFlow', sampleSize })
+      buildMarketCacheKey('loadPlateUniverse', { metric: 'netFlow', sampleSize, board: 't3' })
     ),
     marketLoad<ClistResponse>(
       plateListUrl('f3', 1, sampleSize),
       TTL.minutes(2),
       true,
       force,
-      buildMarketCacheKey('loadPlateUniverse', { metric: 'change', sampleSize })
+      buildMarketCacheKey('loadPlateUniverse', { metric: 'change', sampleSize, board: 't3' })
     ),
   ]);
 
@@ -453,7 +465,7 @@ export async function loadPlateUniverse(options?: {
   }
 
   try {
-    const codeMap = await loadIndustryPlateCodes();
+    const codeMap = await loadConceptPlateCodes();
     const normalizedCodeMap = new Map<string, string>();
     codeMap.forEach((code, name) => {
       const key = plateLookupKey(name);
@@ -690,8 +702,57 @@ export async function loadSurgeLimitUp(force = false): Promise<SurgeLimitStock[]
   }
 }
 
-export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
-  const dictionaryCacheKey = 'market:plate-dictionary:v1';
+export async function loadXgbLimitUpPool(force = false): Promise<XgbLimitUpStock[]> {
+  const url = `https://flash-api.xuangubao.com.cn/api/pool/detail?pool_name=limit_up&_=${Date.now()}`;
+  try {
+    const data = await marketLoad<{
+      code?: number;
+      data?: Array<{
+        symbol?: string;
+        stock_chi_name?: string;
+        surge_reason?: { related_plates?: Array<{ plate_name?: string; plate_reason?: string }> };
+      }>;
+    }>(url, TTL.seconds(45), true, force, buildMarketCacheKey('loadXgbLimitUpPool'));
+    if (data.code !== 20000 || !Array.isArray(data.data)) return [];
+    return data.data
+      .map((item) => {
+        const related = item.surge_reason?.related_plates || [];
+        const plates = related.map((plate) => String(plate.plate_name || '').trim()).filter(Boolean);
+        const plateReasons = related.map((plate) => String(plate.plate_reason || '').trim()).filter(Boolean);
+        return {
+          code: normalizeCode(String(item.symbol || '')),
+          name: String(item.stock_chi_name || ''),
+          plates,
+          plateReasons: plateReasons.length > 0 ? plateReasons : undefined,
+        };
+      })
+      .filter((item) => item.code && item.code !== '000000');
+  } catch {
+    return [];
+  }
+}
+
+export function buildXgbConceptIndex(stocks: XgbLimitUpStock[]): Map<string, string[]> {
+  const index = new Map<string, string[]>();
+  stocks.forEach((stock) => {
+    if (!stock.code || stock.plates.length === 0) return;
+    index.set(stock.code, Array.from(new Set(stock.plates)));
+  });
+  return index;
+}
+
+const NON_PLATE_CONCEPTS = new Set(['其他', 'ST股']);
+
+/** 逻辑用概念标签：优先选股宝 concepts，缺省回退 hybk（行业名），无效名返回空数组 */
+export function stockConcepts(stock: Pick<TopicStock, 'concepts' | 'reason'>): string[] {
+  if (stock.concepts && stock.concepts.length > 0) return stock.concepts;
+  const reason = stock.reason?.trim();
+  if (!reason || NON_PLATE_CONCEPTS.has(reason)) return [];
+  return [reason];
+}
+
+export async function loadConceptPlateCodes(): Promise<Map<string, string>> {
+  const dictionaryCacheKey = 'market:plate-dictionary:v2';
   try {
     const cached = await indexedDBCache.get<Array<[string, string]>>(dictionaryCacheKey);
     if (cached && cached.length > 0) {
@@ -707,7 +768,7 @@ export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
 
   for (let page = 1; page < 100; page += 1) {
     const url = `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(
-      'm:90+t:2'
+      EM_CONCEPT_FS
     )}&fields=f12,f14&pn=${page}&pz=${pageSize}&po=1&cb=__em`;
 
     try {
@@ -716,7 +777,7 @@ export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
           total?: number | string;
           diff?: Array<{ f12?: string; f14?: string }> | Record<string, { f12?: string; f14?: string }>;
         };
-      }>(url, TTL.hours(1), false, buildMarketCacheKey('loadIndustryPlateCodesPage', { page, pageSize }));
+      }>(url, TTL.hours(1), false, buildMarketCacheKey('loadConceptPlateCodesPage', { page, pageSize }));
       total = Math.max(total, Number(data?.data?.total) || 0);
       const diff = data?.data?.diff;
       const rows = Array.isArray(diff) ? diff : diff ? Object.values(diff) : [];
@@ -742,7 +803,7 @@ export async function loadIndustryPlateCodes(): Promise<Map<string, string>> {
 }
 
 export async function searchPlateCodeByName(name: string): Promise<string | null> {
-  const map = await loadIndustryPlateCodes();
+  const map = await loadConceptPlateCodes();
   return map.get(name) || null;
 }
 

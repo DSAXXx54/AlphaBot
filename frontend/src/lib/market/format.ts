@@ -64,16 +64,29 @@ export function normalizePlateName(name: string): string {
     .replace(/[（(]申万[）)]/g, '')
     .replace(/申万/g, '')
     .replace(/[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]/g, '')
-    .replace(/[IVX]+$/i, '')
+    // 仅在罗马后缀前紧跟非拉丁字符时才剥（保护 AI/CPO 等拉丁缩写概念名）
+    .replace(/([^A-Za-z0-9_])[IVX]{2,}$/i, '$1')
     .replace(/[()（）\s]/g, '')
     .trim();
 }
+
+/** 外部源（选股宝等）习惯命名 → 东财 t:3 概念名；命中别名后仍找不到则回落原名的常规匹配 */
+const PLATE_NAME_ALIASES: Record<string, string> = {
+  黄金: '黄金概念',
+  折叠屏: '柔性屏(折叠屏)',
+  闪存: '存储芯片',
+};
 
 export function matchPlate<T extends { name: string }>(plates: T[], name: string): T | undefined {
   const raw = name.trim();
   if (!raw || raw === '其他') return undefined;
   const exact = plates.find((plate) => plate.name === raw);
   if (exact) return exact;
+  const alias = PLATE_NAME_ALIASES[raw];
+  if (alias) {
+    const aliased = plates.find((plate) => plate.name === alias);
+    if (aliased) return aliased;
+  }
   const key = normalizePlateName(raw);
   if (!key) return undefined;
   const normalized = plates.find((plate) => normalizePlateName(plate.name) === key);
@@ -81,7 +94,7 @@ export function matchPlate<T extends { name: string }>(plates: T[], name: string
   return plates
     .filter((plate) => {
       const plateKey = normalizePlateName(plate.name);
-      return plateKey.length >= 2 && (key.startsWith(plateKey) || plateKey.startsWith(key));
+      return plateKey.length >= 3 && key.length >= 3 && (key.startsWith(plateKey) || plateKey.startsWith(key));
     })
     .sort((a, b) => normalizePlateName(b.name).length - normalizePlateName(a.name).length)[0];
 }
