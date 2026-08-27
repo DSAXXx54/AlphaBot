@@ -1,5 +1,6 @@
 import { buildMarketCacheKey, cached, TTL, mapBatches, marketEastmoneyGet, marketGet, marketGetForce } from './client';
 import { asNumber, formatAmount, formatAmountChange, formatChange, normalizeCode, normalizePlateName, yyyymmdd } from './format';
+import { filterTrendPlateUniverse } from './plateFilter';
 import type { MarketPayoffItem, TurnoverMinutePoint, TurnoverSnapshot } from './types';
 import { api } from '../api';
 import { indexedDBCache } from '../indexedDBCache';
@@ -70,7 +71,7 @@ type TurnoverCharts = {
 
 const EM_UT = '7eea3edcaed734bea9cbfc24409ed989';
 const LIST_LIMIT = 8;
-const PLATE_SAMPLE_SIZE = 10;
+const PLATE_SAMPLE_SIZE = 100;
 
 function marketLoad<T>(url: string, ttl: number, persist = false, force = false, key: string): Promise<T> {
   return force ? marketGetForce<T>(url, ttl, persist, key) : marketGet<T>(url, ttl, persist, key);
@@ -310,7 +311,7 @@ export async function loadPlateUniverse(options?: {
     (name) => name && !Array.from(merged.values()).some((plate) => matchesPlateName(plate, name))
   );
   if (missingPriorityNames.length === 0) {
-    return Array.from(merged.values());
+    return filterTrendPlateUniverse(Array.from(merged.values()));
   }
 
   try {
@@ -336,7 +337,7 @@ export async function loadPlateUniverse(options?: {
     // keep partially successful base universe
   }
 
-  return Array.from(merged.values());
+  return filterTrendPlateUniverse(Array.from(merged.values()));
 }
 
 /** 合并流入/流出榜，供主线等板块名称匹配 */

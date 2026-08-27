@@ -1,10 +1,12 @@
 import type { MarketTrendPanelData, MarketTrendStage, MarketTrendTopic, MarketTrendStockTag } from './types';
 import type { PlateFlow, SurgeLimitStock, TopicStock } from './api';
 import { isoDate, matchPlate, normalizeCode, normalizePlateName } from './format';
+import { getTrendPlateWeight } from './plateFilter';
 
 const INFLOW_COLORS = ['#ff5a6f', '#5b8def', '#18b7d8', '#f59e0b', '#14b8a6'];
 const OUTFLOW_COLORS = ['#f7bfc5', '#c8d4f2', '#b9e8ee', '#f6d8ae', '#cfe9df'];
-const CANDIDATE_LIMIT = 32;
+const CANDIDATE_LIMIT = 20;
+const CANDIDATE_SLICE_PER_SIDE = 10;
 
 export const EMPTY_SECTOR_TREND: MarketTrendPanelData = {
   range: 20,
@@ -91,8 +93,15 @@ function pickCandidatePlates(plates: PlateFlow[], ztList: TopicStock[], surge: S
   ztList.forEach((stock) => push(matchPlate(plates, stock.reason || '')));
   surge.forEach((stock) => stock.plates.forEach((name) => push(matchPlate(plates, name))));
 
-  const byFlow = [...plates].sort((a, b) => b.netFlow - a.netFlow || b.amount - a.amount).slice(0, 16);
-  const byChange = [...plates].sort((a, b) => b.change - a.change || b.netFlow - a.netFlow).slice(0, 16);
+  const weightedFlow = (plate: PlateFlow) => plate.netFlow * getTrendPlateWeight(plate.name);
+  const weightedChange = (plate: PlateFlow) => plate.change * getTrendPlateWeight(plate.name);
+
+  const byFlow = [...plates]
+    .sort((a, b) => weightedFlow(b) - weightedFlow(a) || b.amount - a.amount)
+    .slice(0, CANDIDATE_SLICE_PER_SIDE);
+  const byChange = [...plates]
+    .sort((a, b) => weightedChange(b) - weightedChange(a) || b.netFlow - a.netFlow)
+    .slice(0, CANDIDATE_SLICE_PER_SIDE);
 
   [...byFlow, ...byChange].forEach((plate) => push(plate));
   return Array.from(matched.values()).slice(0, CANDIDATE_LIMIT);
@@ -182,13 +191,14 @@ export function buildSectorTrendData(
   const amountValues = metrics.map((item) => item.plate.amount);
 
   const topics = metrics.map((item, index) => {
-    const score = candidateRpsScore({
+    const baseScore = candidateRpsScore({
       changeRank: percentileRank(changeValues, item.plate.change),
       netFlowRank: percentileRank(netFlowValues, item.plate.netFlow),
       flowIntensityRank: percentileRank(flowIntensityValues, item.flowIntensity),
       breadthRank: percentileRank(breadthValues, item.breadth),
       amountRank: percentileRank(amountValues, item.plate.amount),
     });
+    const score = clampScore(baseScore * getTrendPlateWeight(item.plate.name));
 
     return toTopic(
       item.plate,
