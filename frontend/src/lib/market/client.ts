@@ -61,31 +61,25 @@ export async function cached<T>(
 ): Promise<T> {
   const force = options?.force === true;
   if (force) {
-    console.info('[market-cache] force-clear', { key, persist, ttl });
     memory.delete(key);
     inflight.delete(key);
     if (persist) await deletePersisted(key);
   }
   const hit = memory.get(key);
   if (!force && hit && Date.now() - hit.at < hit.ttl) {
-    console.info('[market-cache] memory-hit', { key, persist, ttl });
     return hit.data as T;
   }
   if (persist) {
     const stored = await readPersisted<T>(key);
     if (stored != null) {
-      console.info('[market-cache] persisted-hit', { key, ttl });
       memory.set(key, { at: Date.now(), ttl, data: stored });
       return stored;
     }
   }
   const pending = inflight.get(key);
   if (!force && pending) {
-    console.info('[market-cache] inflight-hit', { key, persist, ttl });
     return pending as Promise<T>;
   }
-
-  console.info('[market-cache] miss', { key, persist, ttl, force });
 
   const request = loader()
     .then(async (data) => {
@@ -142,10 +136,11 @@ function stripJsonpCallback(url: string): string {
     .replace(/\?&/, '?');
 }
 
-async function foxRequestJson<T>(url: string): Promise<T> {
+async function foxRequestJson<T>(url: string, context?: { key?: string; requestUrl?: string }): Promise<T> {
   if (typeof window === 'undefined' || typeof window.foxAgentCrossRequest !== 'function') {
     throw new Error('foxAgentCrossRequest unavailable');
   }
+  const requestUrl = context?.requestUrl || url;
   const payload = await new Promise<unknown>((resolve, reject) => {
     window.foxAgentCrossRequest?.({
       url: stripJsonpCallback(url),
@@ -154,7 +149,12 @@ async function foxRequestJson<T>(url: string): Promise<T> {
         resolve(body);
       },
       error(error) {
-        console.warn('[market] foxAgentCrossRequest error', error instanceof Error ? error.message : String(error));
+        console.warn('[market] foxAgentCrossRequest error', {
+          key: context?.key,
+          url: requestUrl,
+          foxUrl: url,
+          error: error instanceof Error ? error.message : String(error),
+        });
         reject(error instanceof Error ? error : new Error(typeof error === 'string' ? error : JSON.stringify(error)));
       },
     });
@@ -223,7 +223,7 @@ export function marketEastmoneyGet<T>(
   options?: { force?: boolean; foxUrl?: string }
 ): Promise<T> {
   if (hasFoxAgentCrossRequest()) {
-    return cached(key, ttl, persist, () => foxRequestJson<T>(options?.foxUrl || url), {
+    return cached(key, ttl, persist, () => foxRequestJson<T>(options?.foxUrl || url, { key, requestUrl: url }), {
       force: options?.force === true,
     });
   }
