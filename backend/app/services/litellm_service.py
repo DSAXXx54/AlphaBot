@@ -163,4 +163,3 @@ class LiteLLMService:
                 delta = ""
             if delta:
                 yield delta
-

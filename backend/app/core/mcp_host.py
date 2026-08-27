@@ -155,9 +155,22 @@ class McpHostRegistry:
             # 将 MCP Tool 模型转换为简单 dict，供 AgentService 使用
             input_schema: Dict[str, Any] = {}
             try:
-                if getattr(t, "inputSchema", None) is not None:
-                    input_schema = t.inputSchema.model_dump(mode="json")  # type: ignore[assignment]
+                raw_input_schema = getattr(t, "inputSchema", None)
+                if isinstance(raw_input_schema, dict):
+                    input_schema = raw_input_schema
+                elif hasattr(raw_input_schema, "model_dump"):
+                    input_schema = raw_input_schema.model_dump(mode="json")  # type: ignore[assignment]
+                elif raw_input_schema is not None:
+                    logger.warning(
+                        "MCP Host: unexpected inputSchema type for tool %s: %s",
+                        getattr(t, "name", "<unknown>"),
+                        type(raw_input_schema).__name__,
+                    )
             except Exception:  # noqa: BLE001
+                logger.exception(
+                    "MCP Host: serialize inputSchema failed for tool %s",
+                    getattr(t, "name", "<unknown>"),
+                )
                 input_schema = {}
 
             tools.append(
