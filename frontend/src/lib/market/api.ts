@@ -342,8 +342,8 @@ export async function loadShortEmotion(days = 5, force = false): Promise<ShortEm
   }
 }
 
-function plateListUrl(fid: 'f62' | 'f3' | 'f6', po: 0 | 1, pz = 100) {
-  return `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=${fid}&fs=${encodeURIComponent(EM_CONCEPT_FS)}&fields=f2,f3,f6,f12,f14,f62,f104,f105,f106&pn=1&pz=${pz}&po=${po}&cb=__em`;
+function plateListUrl(fid: 'f62' | 'f3' | 'f6', po: 0 | 1, pz = 100, pn = 1) {
+  return `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=${fid}&fs=${encodeURIComponent(EM_CONCEPT_FS)}&fields=f2,f3,f6,f12,f14,f62,f104,f105,f106&pn=${pn}&pz=${pz}&po=${po}&cb=__em`;
 }
 
 function parsePlateList(payload: ClistResponse | null | undefined): PlateFlow[] {
@@ -370,26 +370,45 @@ function matchesPlateName(plate: PlateFlow, name: string) {
   return key && plateLookupKey(plate.name) === key;
 }
 
-function specificPlateUrl(codes: string[]) {
-  return `https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(
-    codes.map((code) => `b:${code}`).join(',')
-  )}&fields=f2,f3,f6,f12,f14,f62,f104,f105,f106&pn=1&pz=${Math.max(codes.length, 1)}&po=1&cb=__em`;
-}
+async function loadExpandedPlateUniverseByNames(names: string[], force = false): Promise<PlateFlow[]> {
+  if (names.length === 0) return [];
 
-async function loadSpecificPlates(codes: string[], force = false): Promise<PlateFlow[]> {
-  if (codes.length === 0) return [];
-  try {
-    const data = await marketLoad<ClistResponse>(
-      specificPlateUrl(codes),
-      TTL.minutes(2),
-      true,
-      force,
-      buildMarketCacheKey('loadSpecificPlates', { codes: [...codes].sort().join(',') })
-    );
-    return parsePlateList(data);
-  } catch {
-    return [];
+  const matched = new Map<string, PlateFlow>();
+  const targetKeys = new Set(names.map((name) => plateLookupKey(name)).filter(Boolean));
+  const pageSize = 200;
+
+  for (const fid of ['f62', 'f3'] as const) {
+    let total = 0;
+    for (let page = 1; page <= 10; page += 1) {
+      try {
+        const data = await marketLoad<ClistResponse>(
+          plateListUrl(fid, 1, pageSize, page),
+          TTL.minutes(2),
+          true,
+          force,
+          buildMarketCacheKey('loadPlateUniverseExpanded', { fid, page, pageSize, board: 't3' })
+        );
+        total = Math.max(total, Number(data?.data?.total) || 0);
+        const rows = parsePlateList(data);
+        if (rows.length === 0) break;
+
+        rows.forEach((plate) => {
+          if (!plate.code || matched.has(plate.code)) return;
+          matched.set(plate.code, plate);
+        });
+
+        const satisfied = Array.from(targetKeys).every((key) =>
+          Array.from(matched.values()).some((plate) => plateLookupKey(plate.name) === key)
+        );
+        if (satisfied) return Array.from(matched.values());
+        if (total > 0 && page * pageSize >= total) break;
+      } catch {
+        break;
+      }
+    }
   }
+
+  return Array.from(matched.values());
 }
 
 export async function loadPlateFlows(force = false): Promise<{ inflow: PlateFlow[]; outflow: PlateFlow[] }> {
@@ -465,21 +484,8 @@ export async function loadPlateUniverse(options?: {
   }
 
   try {
-    const codeMap = await loadConceptPlateCodes();
-    const normalizedCodeMap = new Map<string, string>();
-    codeMap.forEach((code, name) => {
-      const key = plateLookupKey(name);
-      if (key && !normalizedCodeMap.has(key)) normalizedCodeMap.set(key, code);
-    });
-    const missingCodes = Array.from(
-      new Set(
-        missingPriorityNames
-          .map((name) => normalizedCodeMap.get(plateLookupKey(name)) || '')
-          .filter((code) => code && !merged.has(code))
-      )
-    );
-    const specificPlates = await loadSpecificPlates(missingCodes, force);
-    specificPlates.forEach((plate) => {
+    const expanded = await loadExpandedPlateUniverseByNames(missingPriorityNames, force);
+    expanded.forEach((plate) => {
       if (!plate.code || merged.has(plate.code)) return;
       merged.set(plate.code, plate);
     });
