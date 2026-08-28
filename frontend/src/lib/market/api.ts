@@ -526,10 +526,12 @@ export async function loadTopicPools(days: string[], force = false): Promise<{
   const latest = days[days.length - 1];
   const rows = await mapBatches(days, 6, async (day) => {
     const latestDay = day === latest;
+    // 历史日数据不可变，force 只作用于最新日，避免整窗重打
+    const dayForce = latestDay && force;
     const [zt, zb, dt] = await Promise.all([
-      loadPool('zt', day, latestDay, force),
-      loadPool('zb', day, latestDay, force),
-      latestDay ? loadPool('dt', day, true, force) : Promise.resolve([] as TopicStock[]),
+      loadPool('zt', day, latestDay, dayForce),
+      loadPool('zb', day, latestDay, dayForce),
+      latestDay ? loadPool('dt', day, true, dayForce) : Promise.resolve([] as TopicStock[]),
     ]);
     return { day, zt, zb, dt };
   });
@@ -814,6 +816,47 @@ export async function loadConceptPlateCodes(): Promise<Map<string, string>> {
 export async function searchPlateCodeByName(name: string): Promise<string | null> {
   const map = await loadConceptPlateCodes();
   return map.get(name) || null;
+}
+
+export type QuoteSnapshot = { name: string; price: number | null; change: number | null };
+
+/** 沪深 secid 前缀：6 开头沪市 1.，0/3 开头深市 0.；北交所等返回 null 跳过 */
+function secidOf(code: string): string | null {
+  const c = normalizeCode(code);
+  if (!/^\d{6}$/.test(c)) return null;
+  if (c.startsWith('6')) return `1.${c}`;
+  if (c.startsWith('0') || c.startsWith('3')) return `0.${c}`;
+  return null;
+}
+
+/** 批量实时行情（东财 ulist），用于观察池盘中排序；一笔请求最多覆盖传入代码 */
+export async function loadQuoteList(codes: string[], force = false): Promise<Map<string, QuoteSnapshot>> {
+  const secids = Array.from(new Set(codes.map(secidOf).filter((item): item is string => item !== null)));
+  if (secids.length === 0) return new Map();
+  const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&np=1&secids=${secids.join(',')}&fields=f2,f3,f12,f14&cb=__em`;
+  try {
+    const data = await marketLoad<ClistResponse>(
+      url,
+      TTL.seconds(20),
+      false,
+      force,
+      buildMarketCacheKey('loadQuoteList', { secids: secids.join(',') })
+    );
+    const rows = clistDiff(data);
+    const quotes = new Map<string, QuoteSnapshot>();
+    rows.forEach((item) => {
+      const code = item.f12;
+      if (!code) return;
+      quotes.set(normalizeCode(String(code)), {
+        name: String(item.f14 || ''),
+        price: typeof item.f2 === 'number' ? item.f2 : null,
+        change: typeof item.f3 === 'number' ? item.f3 : null,
+      });
+    });
+    return quotes;
+  } catch {
+    return new Map();
+  }
 }
 
 export async function loadStrong(force = false): Promise<MarketPayoffItem[]> {

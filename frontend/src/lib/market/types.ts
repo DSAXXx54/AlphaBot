@@ -238,6 +238,24 @@ export type ReboundStock = {
   wasLeader: boolean;
 };
 
+/** 潜在反包观察池：前连板股断板后尚未回封，盘前即可算出，盘中挂实时涨幅 */
+export type ReboundWatchStock = {
+  name: string;
+  code: string;
+  /** 前一轮连板高度 */
+  prevHeight: number;
+  /** 距上次涨停的交易日数 */
+  gapDays: number;
+  /** 前轮曾是当日空间龙头 */
+  wasLeader: boolean;
+  /** 今日曾封板后炸板（回封尝试已失败一次） */
+  brokeToday: boolean;
+  /** 实时涨幅%（行情缺失为 null） */
+  change: number | null;
+  /** 现价（行情缺失为 null） */
+  price: number | null;
+};
+
 export type RelaySnapshot = {
   /** 统计窗口内交易日数 */
   days: number;
@@ -251,6 +269,8 @@ export type RelaySnapshot = {
   watchlist: RelayCandidate[];
   /** 今日反包股 */
   rebounds: ReboundStock[];
+  /** 潜在反包观察池（断板未回封，实时涨幅由快照层补充） */
+  reboundWatch: ReboundWatchStock[];
   /** 历史反包次日继续率（窗口内，不含今日） */
   reboundStats: {
     total: number;

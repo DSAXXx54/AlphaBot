@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { StockInfo } from '../types';
-import { ChartLine, Search, Settings, Info, Bot, LogIn, User, LogOut, Key, Flame, Trophy, Sparkles, RefreshCw } from 'lucide-react';
+import { ChartLine, Search, Settings, Info, Bot, LogIn, User, LogOut, Key, Flame, Trophy, Sparkles, RefreshCw, Lock } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -115,6 +115,7 @@ const EMPTY_CARD_DETAILS: Record<MarketCardLabel, boolean> = {
   赚钱效应: true,
 };
 const MARKET_TRADING_RELOAD_MS = 60_000;
+const RELAY_UNLOCK_POINTS = 1000;
 
 type MarketPageLoadMeta = {
   sessionKey: string;
@@ -146,6 +147,29 @@ function isAfterMarketClose(now = new Date()): boolean {
   const day = now.getDay();
   if (day === 0 || day === 6) return false;
   return now.getHours() * 60 + now.getMinutes() > 900;
+}
+
+function canAccessRelay(points?: number | null) {
+  return (points ?? 0) >= RELAY_UNLOCK_POINTS;
+}
+
+function RelayLockedPanel({ points = 0 }: { points?: number }) {
+  const missingPoints = Math.max(0, RELAY_UNLOCK_POINTS - points);
+
+  return (
+    <div className="rounded-[24px] border border-dashed border-orange-300/70 bg-orange-50/50 p-6 text-center dark:border-orange-400/30 dark:bg-orange-400/10">
+      <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-orange-500/10 text-orange-600 dark:text-orange-300">
+        <Lock className="h-5 w-5" />
+      </div>
+      <div className="mt-3 text-sm font-semibold text-foreground">龙头接力 / 断板反包</div>
+      <div className="mt-2 text-sm text-muted-foreground">
+        该卡片仅对积分大于等于 {RELAY_UNLOCK_POINTS} 的用户开放。
+      </div>
+      <div className="mt-3 text-xs text-muted-foreground">
+        当前积分 {points}，还差 {missingPoints} 积分解锁。
+      </div>
+    </div>
+  );
 }
 
 function RelayCyclePanel({
@@ -302,8 +326,53 @@ function RelayCyclePanel({
           </div>
         ) : null}
 
+        {relay.reboundWatch.length > 0 ? (
+          <div className="mt-4">
+            <div className="text-xs font-medium text-muted-foreground">
+              观察池（断板未回封 {relay.reboundWatch.length}只，按盘中涨幅排序，≥7% 临封关注）
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {[...relay.reboundWatch]
+                .sort((a, b) => (b.change ?? -100) - (a.change ?? -100))
+                .map((stock) => {
+                  const nearSeal = (stock.change ?? 0) >= 7;
+                  return (
+                    <button
+                      key={stock.code}
+                      type="button"
+                      onClick={() => onSelectStock(stock.code, stock.name)}
+                      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:bg-muted/60 ${
+                        nearSeal ? 'bg-orange-500/10 text-orange-700 dark:text-orange-300' : 'text-foreground'
+                      }`}
+                    >
+                      <span className="font-medium">{stock.name}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        前{boardHeightLabel(stock.prevHeight)}·断{stock.gapDays}日
+                        {stock.brokeToday ? '·炸' : ''}
+                        {stock.wasLeader ? '·前龙头' : ''}
+                      </span>
+                      <span
+                        className={`tabular-nums text-[10px] ${
+                          stock.change === null
+                            ? 'text-muted-foreground'
+                            : stock.change > 0
+                              ? 'text-orange-600 dark:text-orange-300'
+                              : 'text-emerald-600 dark:text-emerald-300'
+                        }`}
+                      >
+                        {stock.change === null ? '--' : `${stock.change >= 0 ? '+' : ''}${stock.change.toFixed(2)}%`}
+                      </span>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+        ) : null}
+
         {relay.rebounds.length > 0 ? (
-          <div className="mt-4 divide-y divide-border/50">
+          <div className="mt-4">
+            <div className="mb-1 text-xs font-medium text-muted-foreground">已回封（确认入列）</div>
+            <div className="divide-y divide-border/50">
             {relay.rebounds.map((stock) => (
               <button
                 key={stock.code}
@@ -329,10 +398,13 @@ function RelayCyclePanel({
                 </span>
               </button>
             ))}
+            </div>
           </div>
         ) : (
           <div className="mt-4 text-xs text-muted-foreground">
-            今日无反包。反包多集中出现在晋级率低谷（退潮修复期），个股机会需同题材与早封配合。
+            {relay.reboundWatch.length > 0
+              ? '今日尚无回封——观察池中的异动股回封后转入此名单。'
+              : '今日无反包候选。反包多集中出现在晋级率低谷（退潮修复期），个股机会需同题材与早封配合。'}
           </div>
         )}
       </div>
@@ -366,6 +438,7 @@ export default function Home() {
   const marketPageLoadMetaRef = useRef<MarketPageLoadMeta | null>(null);
   const modeConfig = HOME_VIEW_MODES[viewMode];
   const emotionSeries = marketSnapshot.emotionSeries;
+  const canViewRelay = canAccessRelay(user?.points);
   const selectedEmotionPoint =
     emotionSeries.find((point) => point.fullDate === selectedEmotionDate) ??
     emotionSeries[emotionSeries.length - 1] ??
@@ -474,6 +547,7 @@ export default function Home() {
               apply: (current: MarketSnapshot): MarketSnapshot => ({
                 ...current,
                 mainlineLanes: mainline.mainlineLanes,
+                relay: mainline.relay,
                 diagnostics: {
                   ...current.diagnostics,
                   主线: { facts: mainline.facts },
@@ -1186,13 +1260,10 @@ export default function Home() {
                           </div>
                         </div>
                       ) : null}
-
-                      {marketSnapshot.relay ? (
-                        <RelayCyclePanel relay={marketSnapshot.relay} onSelectStock={handleSelectMarketStock} />
-                      ) : null}
                     </div>
                   ) : activeMarketCard === '主线' ? (
-                    <div className="grid gap-4 lg:grid-cols-3">
+                    <div className="space-y-4">
+                      <div className="grid gap-4 lg:grid-cols-3">
                       {marketSnapshot.mainlineLanes.length === 0 ? (
                         <div className="rounded-[22px] border border-dashed border-border/70 bg-background/35 px-4 py-8 text-center text-sm text-muted-foreground lg:col-span-3">
                           暂无涨停主线
@@ -1260,6 +1331,15 @@ export default function Home() {
                         </div>
                         );
                       })}
+                      </div>
+
+                      {marketSnapshot.relay ? (
+                        canViewRelay ? (
+                          <RelayCyclePanel relay={marketSnapshot.relay} onSelectStock={handleSelectMarketStock} />
+                        ) : (
+                          <RelayLockedPanel points={user?.points ?? 0} />
+                        )
+                      ) : null}
                     </div>
                   ) : (
                     <div className="grid gap-4 lg:grid-cols-3">

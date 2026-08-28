@@ -5,6 +5,7 @@ import {
   loadIntradayEmotion,
   loadPlateUniverse,
   loadPlates,
+  loadQuoteList,
   loadShortEmotion,
   loadStrong,
   loadSurgeLimitUp,
@@ -53,6 +54,7 @@ export type MarketTrendSnapshot = {
 
 export type MarketMainlineSnapshot = {
   mainlineLanes: MarketMainlineLane[];
+  relay: MarketSnapshot['relay'];
   facts: string[];
 };
 
@@ -370,7 +372,7 @@ async function loadLatestMarketContext(force = false): Promise<LatestMarketConte
 
 async function buildEmotionSnapshot(limit: number, force = false): Promise<MarketEmotionSnapshot> {
   const [tradingDays, intradayEmotion, shortEmotion] = await Promise.all([
-    loadTradingDays(limit, force),
+    loadTradingDays(FULL_EMOTION_DAYS, force),
     loadIntradayEmotion(force),
     loadShortEmotion(limit, force),
   ]);
@@ -383,9 +385,10 @@ async function buildEmotionSnapshot(limit: number, force = false): Promise<Marke
           dtByDate: new Map<string, TopicStock[]>(),
         };
 
-  const emotionSeries = tradingDays
+  const emotionDays = tradingDays.slice(-limit);
+  const emotionSeries = emotionDays
     .map((day, index) => {
-      const prev = index > 0 ? tradingDays[index - 1] : '';
+      const prev = index > 0 ? emotionDays[index - 1] : '';
       const zt = pools.ztByDate.get(day) || [];
       const geese = deriveGeese(prev ? pools.ztByDate.get(prev) || [] : [], zt, pools.zbByDate.get(day) || []);
       return emotionFromZt(day, zt, geese);
@@ -423,7 +426,30 @@ export async function loadTrendSnapshot(force = false): Promise<MarketTrendSnaps
 }
 
 export async function loadMainlineSnapshot(force = false): Promise<MarketMainlineSnapshot> {
-  const context = await loadLatestMarketContext(force);
+  // 接力/反包需要多日池历史：与 context 的最新日池共享缓存，历史日 8h 持久缓存
+  const [context, relayDays] = await Promise.all([
+    loadLatestMarketContext(force),
+    loadTradingDays(FULL_EMOTION_DAYS, force),
+  ]);
+  const relayPools =
+    relayDays.length > 0
+      ? await loadTopicPools(relayDays, force)
+      : {
+          ztByDate: new Map<string, TopicStock[]>(),
+          zbByDate: new Map<string, TopicStock[]>(),
+          dtByDate: new Map<string, TopicStock[]>(),
+        };
+  const relay = buildRelaySnapshot(relayDays, relayPools.ztByDate, relayPools.zbByDate);
+  // 潜在反包观察池挂一笔批量实时行情（20s TTL），盘中按涨幅排序预警
+  if (relay && relay.reboundWatch.length > 0) {
+    const quotes = await loadQuoteList(relay.reboundWatch.map((stock) => stock.code), force);
+    if (quotes.size > 0) {
+      relay.reboundWatch = relay.reboundWatch.map((stock) => {
+        const quote = quotes.get(normalizeCode(stock.code));
+        return quote ? { ...stock, change: quote.change, price: quote.price } : stock;
+      });
+    }
+  }
   const mainlineLanes = buildMainlineLanes(
     context.trendUniverse,
     context.latestZt,
@@ -431,6 +457,7 @@ export async function loadMainlineSnapshot(force = false): Promise<MarketMainlin
   );
   return {
     mainlineLanes,
+    relay,
     facts: mainlineFacts(mainlineLanes),
   };
 }

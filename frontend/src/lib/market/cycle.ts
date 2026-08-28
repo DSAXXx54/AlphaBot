@@ -2,6 +2,7 @@ import type { TopicStock } from './api';
 import { normalizeCode } from './format';
 import type {
   ReboundStock,
+  ReboundWatchStock,
   RelayBreak,
   RelayCandidate,
   RelayChainLink,
@@ -27,6 +28,8 @@ import type {
 const CHAIN_LINK_LIMIT = 6;
 const WATCHLIST_LIMIT = 5;
 const REBOUND_LOOKBACK = 6;
+/** 潜在反包观察池容量（批量行情一笔请求覆盖） */
+const REBOUND_WATCH_LIMIT = 16;
 
 function sealClock(minutes: number): string {
   const m = Math.max(0, Math.round(minutes));
@@ -171,6 +174,40 @@ function detectReboundsAt(series: DaySeries[], dayIndex: number): ReboundInfo[] 
   return results;
 }
 
+/** 潜在反包观察池：前连板股断板后尚未回封（回封即转 rebounds），盘前即可算出 */
+function buildReboundWatch(series: DaySeries[]): Omit<ReboundWatchStock, 'change' | 'price'>[] {
+  const today = series[series.length - 1];
+  const results: Omit<ReboundWatchStock, 'change' | 'price'>[] = [];
+  const seen = new Set<string>();
+  // 从最近的涨停日往回扫，首个命中即该股最近一轮的（最终）高度
+  for (let j = series.length - 2; j >= 0 && j >= series.length - 1 - REBOUND_LOOKBACK; j -= 1) {
+    series[j].zt.forEach((stock) => {
+      const code = normalizeCode(stock.code);
+      if (seen.has(code)) return;
+      seen.add(code);
+      const prevHeight = stock.lbc || 1;
+      if (prevHeight < 2) return;
+      const gapDays = series.length - 1 - j - 1;
+      if (gapDays < 1) return;
+      if (today.byCode.has(code)) return; // 已回封，在 rebounds 名单里
+      results.push({
+        name: stock.name,
+        code: stock.code,
+        prevHeight,
+        gapDays,
+        wasLeader: prevHeight >= series[j].maxHeight,
+        brokeToday: today.zbByCode.has(code),
+      });
+    });
+  }
+  return results
+    .sort(
+      (a, b) =>
+        (b.wasLeader ? 1 : 0) - (a.wasLeader ? 1 : 0) || b.prevHeight - a.prevHeight || a.gapDays - b.gapDays
+    )
+    .slice(0, REBOUND_WATCH_LIMIT);
+}
+
 export function buildRelaySnapshot(
   days: string[],
   ztByDate: Map<string, TopicStock[]>,
@@ -240,6 +277,7 @@ export function buildRelaySnapshot(
 
   // ── 反包：今日名单 + 窗口内次日继续率（不含今日）──
   const rebounds: ReboundStock[] = detectReboundsAt(series, lastIdx).map((item) => item.stock);
+  const reboundWatch = buildReboundWatch(series).map((stock) => ({ ...stock, change: null, price: null }));
   let total = 0;
   let continued = 0;
   let oneDayGapTotal = 0;
@@ -269,6 +307,7 @@ export function buildRelaySnapshot(
     breaksToday,
     watchlist,
     rebounds,
+    reboundWatch,
     reboundStats: { total, continued, oneDayGapTotal, oneDayGapContinued },
     promoteRate,
     firstBoardCount,
