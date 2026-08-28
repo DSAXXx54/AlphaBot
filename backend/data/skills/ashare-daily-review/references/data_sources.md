@@ -52,6 +52,18 @@
 - `mode=rank`：概念股单榜单，每条含 `avgChangePct`（股单平均涨幅）、`accChangePct1M`（近1月）—— 识别最强题材（如创新药 avgChangePct）。
 - 用途：主线题材强度佐证。
 
+### tool_ranking — 排行榜（连板梯队核心源，2026-08-27 实测）
+- 参数：`asset`（stock）、`metric`（如 `limitup_days` 连续涨停天数 / `limitup_seal_volume` 收盘涨停封单量 / `limitdn_days` 连续跌停）、`date`（YYYY-MM-DD）、`order`（desc）、`limit`
+- 调用：`tool_ranking` asset=stock, metric=limitup_days, date=当日, order=desc, limit=50
+- 返回：结构化连板清单（代码/名称/连板天数），按高度降序，直接分层即为连板梯队（6板/5板/4板/3板/2板），与财联社口径一致。
+- 用途：情绪周期的**连板雁阵图首选数据源**（tdx-connector 断连时的唯一结构化来源）。
+- 局限：只能查"连续涨停天数"，**查不到断板反包的多日反包高位股**（如"11天7板"）——反包股用 `data_finsearch` 检索文本补充，或按日回溯 date 自算窗口涨停次数。
+
+### data_finsearch — 金融文本全文检索（消息/反包股补充源）
+- 参数：`keywords`（关键词数组，如 ["连板 反包 N天M板"]、["美元指数 尾市"]）
+- 用途：① 多日反包高位股（N天M板）表述，从财联社/复盘稿文本提取，须标媒体名+时点；② 汇率/隔夜快讯兜底（data_quote 不可用时）。
+- 局限：非一手来源、索引收录有延迟（快讯类当日可搜到，部分隔夜报价滞后）。
+
 ### data_news / data_notice / data_report
 - `data_news`：`symbol`（必填，如 sh600519）、`type`（0公告1研报2新闻3全部）、`mode`（list|detail）
 - `data_notice`：公司公告。
@@ -88,17 +100,23 @@
 - 调用：`data_futures` mode=quote code="fuGC"。返回 `lastPrice`/`prevClose`/`changePct`/`high`/`low`/`updateTime`/`isDelayed`。
 - 用途：大宗（金/油/铜）是 A 股有色/能源/贵金属板块的海外定价锚。
 
-**data_forex（汇率，局限提示）**：
-- 品种：`fxDINIW`（美元指数）、`fxCNH`（离岸人民币）、`fxUSDCNY`（美元人民币）等。
-- 调用：`data_forex` mode=quote query="美元指数"。
-- ⚠️ 实测该接口当前仅返回品种列表、不含实时价位；若取不到数值，外围段该维度标 **【未获取】**，不编造。可用 `data_macro`(region=us) 的美元/利率维度补充。
+**data_quote（外汇，已实测可用）— 代码与调用**：
+- ⚠️ **不要用 `data_forex` 查行情**：其实测 quote 模式已失效——schema 仅 mode/query 两参数、无 code 参数，quote 模式下 query 被完全忽略，无论传什么都返回固定的品种列表。`data_forex(mode=list)` 仅当"代码字典"使用。
+- **正确通道**：`data_quote`（codes=fx 前缀代码，逗号分隔批量）。返回 `price`/`change`/`changePct`/`high`/`low`/`open`/`prevClose`/`bidPrice`/`askPrice`/`updateTime`，分钟级更新。
+- 全量代码目录（2026-08-28 实测，共 10 个）：
+  - `fxDINIW` 美元指数、`fxCNH` 离岸人民币、`fxUSDCNY` 美元人民币（在岸）
+  - `fxEURCNY` 欧元人民币、`fxHKDCNY` 港币人民币、`fxCNYJPY` 人民币日元
+  - `fxEURUSD` 欧元美元、`fxUSDJPY` 美元日元、`fxGBPUSD` 英镑美元、`fxUSDHKD` 美元港币
+- 推荐调用：`data_quote` codes="fxDINIW,fxCNH,fxUSDCNY"（复盘外围段最少集）。
+- 注意：目录外的代码（如 `fxUSDCNH` 不存在）会被**静默忽略**（不报错、无返回），若结果数量对不上需检查代码拼写。目录无瑞郎/澳元等更多货币对，需要时以 WebSearch 兜底。
+- 兜底顺序：`data_quote`（结构化，首选）→ `data_finsearch` 检索汇率快讯文本（非一手，标媒体名+时点）→ WebSearch。
 
-## B. tdx-connector（通达信，已连接）
+## B. tdx-connector（通达信，当前断连）
 
 用于补充行情/筛选：`tdx_quotes`（批量行情）、`tdx_kline`（K线）、
 `tdx_lookup_stock`（代码查询）、`tdx_screener`（条件选股）、
 `tdx_indicator_query` / `tdx_technical_indicator_query`（技术指标）。
-当 westock-mcp 某项缺失或需交叉验证时使用。
+仅在其恢复连接后作交叉验证用途；连板梯队等核心数据以 westock-mcp 为准（见下方 tool_ranking）。
 
 ## C. 持仓类工具（仅当用户授权）
 
