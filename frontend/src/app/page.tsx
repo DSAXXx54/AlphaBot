@@ -19,7 +19,7 @@ import {
   loadPayoffSnapshot,
   loadTrendSnapshot,
 } from '@/lib/market/snapshot';
-import type { MarketCardLabel, MarketSnapshot } from '@/lib/market/types';
+import type { MarketCardLabel, MarketSnapshot, RelaySnapshot } from '@/lib/market/types';
 import { isAuthRequiredView, loginUrl, parseHomeView } from '@/lib/authRedirect';
 
 const StockSearch = dynamic(() => import('../components/StockSearch'), { ssr: false });
@@ -140,6 +140,204 @@ function formatSignedPct(value: number) {
 function boardHeightLabel(lbc: number) {
   if (lbc <= 1) return '首板';
   return `${lbc}板`;
+}
+
+function isAfterMarketClose(now = new Date()): boolean {
+  const day = now.getDay();
+  if (day === 0 || day === 6) return false;
+  return now.getHours() * 60 + now.getMinutes() > 900;
+}
+
+function RelayCyclePanel({
+  relay,
+  onSelectStock,
+}: {
+  relay: RelaySnapshot;
+  onSelectStock: (code: string, name: string) => void;
+}) {
+  const { reboundStats } = relay;
+  const reboundRate = reboundStats.total > 0 ? Math.round((reboundStats.continued / reboundStats.total) * 100) : null;
+  const oneDayGapRate =
+    reboundStats.oneDayGapTotal > 0 ? Math.round((reboundStats.oneDayGapContinued / reboundStats.oneDayGapTotal) * 100) : null;
+  const afterClose = isAfterMarketClose();
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="rounded-[24px] border border-border/70 bg-background/70 p-5">
+        <div className="text-sm font-semibold text-foreground">龙头接力</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          空间龙头断板日的同题材首板是接力龙头的主要来源；盘中缩圈，次日 1进2 确认。
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
+          {relay.promoteRate !== null ? <span className="tabular-nums">晋级率 {relay.promoteRate}%</span> : null}
+          <span className="tabular-nums">首板 {relay.firstBoardCount}只</span>
+          {relay.aliveLeaders.length > 0 ? (
+            <span className="flex flex-wrap items-center gap-1">
+              <span>存活</span>
+              {relay.aliveLeaders.map((leader) => (
+                <button
+                  key={leader.code}
+                  type="button"
+                  onClick={() => onSelectStock(leader.code, leader.name)}
+                  className="rounded px-1.5 py-0.5 font-medium text-orange-600 hover:bg-muted/60 dark:text-orange-300"
+                >
+                  {leader.name}
+                  <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(leader.height)}</span>
+                </button>
+              ))}
+            </span>
+          ) : null}
+        </div>
+
+        {relay.chain.length > 0 ? (
+          <div className="mt-4 space-y-2">
+            <div className="text-xs font-medium text-muted-foreground">近{relay.days}日接力链（回看）</div>
+            <div className="space-y-1.5">
+              {relay.chain.map((link) => (
+                <div key={link.date} className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="tabular-nums text-muted-foreground">{link.date.slice(5)}</span>
+                  {link.leaders.map((leader) => (
+                    <button
+                      key={leader.code}
+                      type="button"
+                      onClick={() => onSelectStock(leader.code, leader.name)}
+                      className="rounded px-1 py-0.5 text-emerald-700 hover:bg-muted/60 dark:text-emerald-300"
+                    >
+                      {leader.name}
+                      <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(leader.height)}断</span>
+                    </button>
+                  ))}
+                  <span className="text-muted-foreground">→</span>
+                  {link.successors.length === 0 ? (
+                    <span className="text-muted-foreground">无接力</span>
+                  ) : (
+                    link.successors.map((successor) => (
+                      <button
+                        key={successor.code}
+                        type="button"
+                        onClick={() => onSelectStock(successor.code, successor.name)}
+                        className={`rounded px-1 py-0.5 hover:bg-muted/60 ${
+                          successor.becameLeader ? 'text-orange-600 dark:text-orange-300' : 'text-foreground'
+                        }`}
+                      >
+                        {successor.name}
+                        <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(successor.maxHeight)}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {relay.breaksToday.length > 0 ? (
+          <div className="mt-4 rounded-xl bg-muted/25 p-3">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="text-muted-foreground">{afterClose ? '今日断板' : '今日未封板'}</span>
+              {relay.breaksToday.map((leader) => (
+                <button
+                  key={leader.code}
+                  type="button"
+                  onClick={() => onSelectStock(leader.code, leader.name)}
+                  className="rounded px-1.5 py-0.5 font-medium text-emerald-700 hover:bg-muted/60 dark:text-emerald-300"
+                >
+                  {leader.name}
+                  <span className="ml-0.5 text-[10px] text-muted-foreground">
+                    {boardHeightLabel(leader.height)}
+                    {leader.status === 'zb' ? '炸板' : afterClose ? '断' : ''}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {relay.watchlist.length > 0 ? (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                <span className="text-muted-foreground">首板候选</span>
+                {relay.watchlist.map((candidate) => (
+                  <button
+                    key={candidate.code}
+                    type="button"
+                    onClick={() => onSelectStock(candidate.code, candidate.name)}
+                    className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted/60 ${
+                      candidate.sameTheme ? 'bg-orange-500/10 text-orange-700 dark:text-orange-300' : 'text-foreground'
+                    }`}
+                  >
+                    <span className="font-medium">{candidate.name}</span>
+                    <span className="tabular-nums text-[10px] text-muted-foreground">{candidate.score}分</span>
+                    {candidate.reasons.slice(0, 2).map((reason) => (
+                      <span key={reason} className="rounded bg-muted/60 px-1 text-[10px] text-muted-foreground">
+                        {reason}
+                      </span>
+                    ))}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="mt-4 text-xs text-muted-foreground">今日空间龙头未见断板，暂无接力窗口。</div>
+        )}
+      </div>
+
+      <div className="rounded-[24px] border border-border/70 bg-background/70 p-5">
+        <div className="text-sm font-semibold text-foreground">断板反包</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          前连板股（≥2板）断板后回封。历史继续率低，慎追；重点用作周期信号。
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span className="tabular-nums">
+            近{relay.days - 1}日反包 {reboundStats.total} 次
+            {reboundRate !== null ? ` · 次日继续 ${reboundStats.continued} 次（${reboundRate}%）` : ''}
+          </span>
+          {oneDayGapRate !== null ? (
+            <span className="tabular-nums">
+              断1日 {reboundStats.oneDayGapContinued}/{reboundStats.oneDayGapTotal}（{oneDayGapRate}%）
+            </span>
+          ) : null}
+        </div>
+
+        {relay.rebounds.length >= 3 ? (
+          <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            反包集中出现（{relay.rebounds.length}只）：多为退潮修复期信号，谨防次日集体分歧。
+          </div>
+        ) : null}
+
+        {relay.rebounds.length > 0 ? (
+          <div className="mt-4 divide-y divide-border/50">
+            {relay.rebounds.map((stock) => (
+              <button
+                key={stock.code}
+                type="button"
+                onClick={() => onSelectStock(stock.code, stock.name)}
+                className="flex w-full items-center justify-between gap-3 py-2 text-left text-xs hover:bg-muted/40"
+              >
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="font-medium text-foreground">{stock.name}</span>
+                  <span className="shrink-0 text-muted-foreground">
+                    前{boardHeightLabel(stock.prevHeight)}·断{stock.gapDays}日
+                  </span>
+                  {stock.wasLeader ? (
+                    <span className="shrink-0 rounded bg-orange-500/10 px-1 text-[10px] text-orange-600 dark:text-orange-300">
+                      前龙头
+                    </span>
+                  ) : null}
+                </span>
+                <span className="flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground">
+                  <span className="tabular-nums">{stock.sealTime}</span>
+                  <span className="tabular-nums">{stock.fund > 0 ? `${stock.fund.toFixed(1)}亿` : '--'}</span>
+                  <span className="tabular-nums">{stock.price > 0 ? `${stock.price.toFixed(2)}元` : '--'}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-4 text-xs text-muted-foreground">
+            今日无反包。反包多集中出现在晋级率低谷（退潮修复期），个股机会需同题材与早封配合。
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 
@@ -987,6 +1185,10 @@ export default function Home() {
                             })}
                           </div>
                         </div>
+                      ) : null}
+
+                      {marketSnapshot.relay ? (
+                        <RelayCyclePanel relay={marketSnapshot.relay} onSelectStock={handleSelectMarketStock} />
                       ) : null}
                     </div>
                   ) : activeMarketCard === '主线' ? (

@@ -16,6 +16,7 @@ import {
   type TopicStock,
 } from './api';
 import { clearMarketCache } from './client';
+import { buildRelaySnapshot } from './cycle';
 import { formatPlateFlow, formatShortDate, matchPlate, normalizeCode } from './format';
 import { buildSectorTrendData } from './sectorTrend';
 import {
@@ -517,8 +518,8 @@ async function buildSnapshot(): Promise<MarketSnapshot> {
   const [turnoverResult, plateUniverseResult, poolResult, surgeResult, xgbLimitUpResult, strongResult, hotResult, bigFaceResult] = await Promise.allSettled([
     loadTurnover(),
     loadPlateUniverse({ priorityNames: [] }),
-    emotionDays.length > 0
-      ? loadTopicPools(emotionDays)
+    tradingDays.length > 0
+      ? loadTopicPools(tradingDays)
       : Promise.resolve({
           ztByDate: new Map<string, TopicStock[]>(),
           zbByDate: new Map<string, TopicStock[]>(),
@@ -571,6 +572,8 @@ async function buildSnapshot(): Promise<MarketSnapshot> {
     })
     .filter((item): item is MarketEmotionPoint => item !== null);
   snapshot.diagnostics.情绪.facts = emotionFacts(snapshot.emotionSeries);
+
+  snapshot.relay = buildRelaySnapshot(tradingDays, pools.ztByDate, pools.zbByDate);
 
   const lanes = buildMainlineLanes(plates, latestZt, buildTopicFundMap(latestZt, latestZb, latestDt));
   snapshot.mainlineLanes = lanes;

@@ -34,6 +34,8 @@ export type TopicStock = {
   type: 'zt' | 'zb' | 'dt';
   fund: number;
   price: number;
+  /** 当日炸板次数（东财 zbc），断板反包/接力评分用 */
+  zbc?: number;
 };
 
 export type PlateMember = {
@@ -75,7 +77,7 @@ type ClistItem = {
 
 type ClistResponse = { data?: { total?: number | string; diff?: ClistItem[] | Record<string, ClistItem> } };
 type KlineResponse = { data?: { klines?: string[] } };
-type PoolItem = { n?: string; c?: string; hybk?: string; fbt?: number; lbc?: number; fund?: number; p?: number };
+type PoolItem = { n?: string; c?: string; hybk?: string; fbt?: number; lbc?: number; fund?: number; p?: number; zbc?: number };
 type TopicPoolResponse = { data?: { pool?: PoolItem[] } };
 type ThsEnvelope<T> = { status_code?: number; data?: T };
 type TurnoverCharts = {
@@ -117,6 +119,7 @@ function mapPool(type: TopicStock['type'], item: PoolItem): TopicStock {
     type,
     fund: item.fund || 0,
     price: (item.p || 0) / 1000,
+    zbc: item.zbc || 0,
   };
 }
 
