@@ -226,7 +226,7 @@ export function AgentInspector({
                     value={config.timezone}
                     onChange={(e) => onConfigChange({ timezone: e.target.value })}
                     className="w-full rounded-xl border border-border bg-background px-3 py-2 text-[12px] text-foreground outline-none"
-                    placeholder="Asia/Shanghai"
+                    placeholder="从环境变量读取默认时区"
                   />
                 </div>
               </div>

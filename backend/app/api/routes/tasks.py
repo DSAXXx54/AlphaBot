@@ -13,6 +13,7 @@ from app.utils.stock_utils import update_stock_data_with_db
 from app.services.automation_service import AutomationService
 from app.api.routes.user import get_current_admin
 from app.models.user import User
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -22,7 +23,7 @@ def _compute_next_run(daily_time: Optional[str], timezone_name: Optional[str], f
         return None
     try:
         hour_text, minute_text = daily_time.split(":", 1)
-        tz = ZoneInfo(timezone_name or "Asia/Shanghai")
+        tz = ZoneInfo(timezone_name or settings.APP_TIMEZONE)
         now = datetime.now(tz)
         next_run_dt = now.replace(hour=int(hour_text), minute=int(minute_text), second=0, microsecond=0)
         if next_run_dt <= now:

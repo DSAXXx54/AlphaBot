@@ -291,11 +291,11 @@ class AutomationService:
 
             skill_name = (params.get("skill_name") or "research").strip()
             if skill_name == "ashare-daily-review":
-                timezone_name = str(params.get("timezone") or "Asia/Shanghai")
+                timezone_name = str(params.get("timezone") or settings.APP_TIMEZONE)
                 try:
                     now = datetime.now(ZoneInfo(timezone_name))
                 except Exception:
-                    timezone_name = "Asia/Shanghai"
+                    timezone_name = settings.APP_TIMEZONE
                     now = datetime.now(ZoneInfo(timezone_name))
 
                 trade_date = now.date()

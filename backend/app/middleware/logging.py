@@ -3,8 +3,17 @@ import time
 from typing import Callable
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from app.core.config import settings
 # 使用 uvicorn 的 logger
 logger = logging.getLogger("uvicorn")
+
+
+def _log_timezone() -> ZoneInfo:
+    try:
+        return ZoneInfo(settings.APP_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("Asia/Shanghai")
 
 async def logging_middleware(request: Request, call_next: Callable):
     # 获取客户端IP
@@ -19,7 +28,7 @@ async def logging_middleware(request: Request, call_next: Callable):
     
     # 记录访问日志
     logger.info(
-        f"{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S')} - "
+        f"{datetime.now(_log_timezone()).strftime('%Y-%m-%d %H:%M:%S')} - "
         f"{request.method} {request.url.path} - "
         f"IP: {client_ip} - "
         f"Status: {response.status_code} - "

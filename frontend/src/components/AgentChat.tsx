@@ -16,6 +16,8 @@ import { AgentArtifact, AgentRunEvent, AgentToolInvocation } from '@/types/agent
 import { TaskInfo } from '@/types';
 import { ExternalMcpServerInfo } from '@/types/user';
 
+const DEFAULT_APP_TIMEZONE = process.env.NEXT_PUBLIC_APP_TIMEZONE || 'Asia/Shanghai';
+
 const generateId = (): string => {
   try {
     const g = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
@@ -119,7 +121,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
   const [automationConfig, setAutomationConfig] = useState<AutomationConfig>({
     taskName: '每日市场复盘',
     dailyTime: '09:00',
-    timezone: 'Asia/Shanghai',
+    timezone: DEFAULT_APP_TIMEZONE,
     skillName: 'research',
     promptTemplate: '请基于 {date} 的市场环境，生成一份结构化的 A 股每日市场复盘，包含指数表现、热点板块、风险提醒、值得关注的标的与后续观察点。',
     enableWebSearch: false,
@@ -1261,7 +1263,7 @@ export default function AgentChat({ onSelectStock }: AgentChatProps) {
       description: automationConfig.taskName.trim() || publishTitle,
       params: {
         daily_time: automationConfig.dailyTime,
-        timezone: automationConfig.timezone.trim() || 'Asia/Shanghai',
+        timezone: automationConfig.timezone.trim() || DEFAULT_APP_TIMEZONE,
         skill_name: automationConfig.skillName,
         prompt_template: promptTemplate,
         enable_web_search: automationConfig.enableWebSearch,

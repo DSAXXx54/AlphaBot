@@ -13,6 +13,7 @@ import inspect
 import json
 import os
 from contextvars import ContextVar
+from contextlib import asynccontextmanager
 from typing import Any, Callable, Optional
 
 import uvicorn
@@ -28,6 +29,8 @@ from app.core.mcp_host import McpHostRegistry
 from app.services.mcp_token_service import McpTokenService
 from app.skills.definitions import ToolSpec, get_mcp_exposable_tool_specs
 from app.services.usage_service import UsageService
+from app.middleware import RateLimitMiddleware, start_cleanup_task, stop_cleanup_task
+from app.middleware.logging import logging_middleware
 
 try:
     from fastmcp import FastMCP
@@ -228,9 +231,21 @@ def _build_fastmcp_http_app(mcp) -> Any:
     raise RuntimeError("当前 fastmcp 版本未暴露可挂载的 HTTP ASGI 应用")
 
 
+@asynccontextmanager
+async def _mcp_lifespan(app: FastAPI, asgi_app):
+    await start_cleanup_task()
+    try:
+        async with asgi_app.lifespan(app):
+            yield
+    finally:
+        await stop_cleanup_task()
+
+
 def build_http_app() -> FastAPI:
     if not _HAS_FASTMCP:
         app = FastAPI(title="AlphaBot MCP Server")
+        app.add_middleware(RateLimitMiddleware)
+        app.middleware("http")(logging_middleware)
 
         @app.get("/health")
         async def health_check():
@@ -247,7 +262,9 @@ def build_http_app() -> FastAPI:
 
     mcp = _build_mcp_app()
     asgi_app = _build_fastmcp_http_app(mcp)
-    app = FastAPI(title="AlphaBot MCP Server", lifespan=asgi_app.lifespan)
+    app = FastAPI(title="AlphaBot MCP Server", lifespan=lambda app: _mcp_lifespan(app, asgi_app))
+    app.add_middleware(RateLimitMiddleware)
+    app.middleware("http")(logging_middleware)
 
     @app.get("/health")
     async def health_check():

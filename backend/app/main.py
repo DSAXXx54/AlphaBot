@@ -6,7 +6,8 @@ import uvicorn
 import os
 import asyncio
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.api.api import api_router
 from app.core.config import settings
@@ -36,9 +37,15 @@ from app.db.init_db import init_database
 init_database()
 
 
-def next_run_at_shanghai(hour: int, minute: int = 0) -> float:
-    shanghai_tz = timezone(timedelta(hours=8))
-    now = datetime.now(shanghai_tz)
+def app_timezone() -> ZoneInfo:
+    try:
+        return ZoneInfo(settings.APP_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("Asia/Shanghai")
+
+
+def next_run_at_app_timezone(hour: int, minute: int = 0) -> float:
+    now = datetime.now(app_timezone())
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now:
         target += timedelta(days=1)
@@ -69,7 +76,7 @@ async def lifespan(app: FastAPI):
     await scheduler.add_task(
         WorldCupService.run_daily_refresh,
         interval=24 * 60 * 60,
-        next_run=next_run_at_shanghai(11, 0),
+        next_run=next_run_at_app_timezone(11, 0),
         description="worldcup_daily_refresh",
         task_id="worldcup_daily_refresh",
     )
@@ -85,7 +92,7 @@ async def lifespan(app: FastAPI):
     await scheduler.add_task(
         SentimentService.sync_today,
         interval=24 * 60 * 60,
-        next_run=next_run_at_shanghai(15, 30),
+        next_run=next_run_at_app_timezone(15, 30),
         description="sentiment_daily_sync",
         task_id="sentiment_daily_sync",
     )
@@ -93,7 +100,7 @@ async def lifespan(app: FastAPI):
     await scheduler.add_task(
         SentimentService.retry_today_if_needed,
         interval=24 * 60 * 60,
-        next_run=next_run_at_shanghai(20, 0),
+        next_run=next_run_at_app_timezone(20, 0),
         description="sentiment_daily_retry",
         task_id="sentiment_daily_retry",
     )

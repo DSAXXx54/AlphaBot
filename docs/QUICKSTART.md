@@ -22,6 +22,7 @@ pip install -r requirements.txt
 - **数据库**：`DATABASE_URL=sqlite:///./stock_assistant.db`（默认即可）
 - **LLM**：`LLM_MODEL`、`LLM_API_KEY`、`LLM_API_BASE`（见 `backend/.env.example`）
 - **数据源**：`DEFAULT_DATA_SOURCE=akshare`（无需 key）或 alphavantage/tushare 并填写对应 key
+- **时区**：`APP_TIMEZONE=Asia/Shanghai`（统一默认时区，影响系统定时任务、日志时间、自动化任务默认值）
 
 可选：联网搜索需 `SEARCH_API_ENABLED=True`、`SEARCH_ENGINE=serpapi`、`SERPAPI_API_KEY`。
 

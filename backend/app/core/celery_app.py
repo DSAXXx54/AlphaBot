@@ -20,7 +20,7 @@ celery_app.conf.update(
     task_serializer='json',
     accept_content=['json'],
     result_serializer='json',
-    timezone='Asia/Shanghai',
+    timezone=settings.APP_TIMEZONE,
     enable_utc=False,
     task_routes={
         "app.tasks.ai_tasks.*_task": {"queue": "ai_tasks"},
