@@ -799,6 +799,11 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                       <div className="flex items-center gap-2">
                         <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.topic.color }} />
                         <span className="truncate text-sm font-semibold text-foreground">{item.topic.name}</span>
+                        {item.topic.relatedPlates && item.topic.relatedPlates.length > 0 ? (
+                          <span className="shrink-0 rounded-full bg-muted/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            同题材 {item.topic.relatedPlates.length}
+                          </span>
+                        ) : null}
                         <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium shadow-sm', PULSE_STYLES[item.state])}>{item.state}</span>
                       </div>
                       <div className="mt-1 line-clamp-1 text-xs leading-5 text-muted-foreground">
@@ -1288,6 +1293,14 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                   阶段涨跌 {formatPercent(selectedTopic.changePct)}
                 </span>
               </div>
+              {selectedTopic.relatedPlates && selectedTopic.relatedPlates.length > 0 ? (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                  <span>同题材板块</span>
+                  {selectedTopic.relatedPlates.map((name) => (
+                    <span key={name} className="rounded-full bg-muted/40 px-2 py-0.5">{name}</span>
+                  ))}
+                </div>
+              ) : null}
             </div>
 
             <div className="grid w-full gap-3 text-sm sm:grid-cols-3 xl:max-w-[380px]">

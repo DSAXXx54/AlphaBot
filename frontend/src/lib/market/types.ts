@@ -147,6 +147,8 @@ export type MarketTrendTopic = {
   amountChange: number;
   phase: MarketTrendStage;
   highlightedStocks: MarketTrendHighlightStock[];
+  /** 同题材被归并的板名（零请求名称粗筛），无归并时不出现 */
+  relatedPlates?: string[];
 };
 
 export type MarketTrendStockTag = {

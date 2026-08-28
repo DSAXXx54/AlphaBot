@@ -2,6 +2,7 @@ import type { MarketTrendPanelData, MarketTrendStage, MarketTrendTopic, MarketTr
 import { stockConcepts, type PlateFlow, type SurgeLimitStock, type TopicStock } from './api';
 import { isoDate, matchPlate, normalizeCode, normalizePlateName } from './format';
 import { getTrendPlateWeight } from './plateFilter';
+import { dedupeCandidatePlates, type PlateGroup } from './plateDedup';
 
 const INFLOW_COLORS = ['#ff5a6f', '#5b8def', '#18b7d8', '#f59e0b', '#14b8a6'];
 const OUTFLOW_COLORS = ['#f7bfc5', '#c8d4f2', '#b9e8ee', '#f6d8ae', '#cfe9df'];
@@ -66,17 +67,24 @@ function stockInPlate(stock: TopicStock, plate: PlateFlow): boolean {
 }
 
 function ztCountForPlate(plate: PlateFlow, ztList: TopicStock[], surge: SurgeLimitStock[]): number {
-  const byConcept = ztList.filter((stock) => stockInPlate(stock, plate)).length;
+  return ztCountForGroup([plate], ztList, surge);
+}
+
+/** 按题材组计数：组内任一板块命中即算，一股只计 1 次 */
+function ztCountForGroup(members: PlateFlow[], ztList: TopicStock[], surge: SurgeLimitStock[]): number {
+  const byConcept = ztList.filter((stock) => members.some((plate) => stockInPlate(stock, plate))).length;
   const bySurge = surge.filter((stock) =>
-    stock.plates.some((name) => name === plate.name || matchPlate([plate], name)?.code === plate.code)
+    members.some((plate) =>
+      stock.plates.some((name) => name === plate.name || matchPlate([plate], name)?.code === plate.code)
+    )
   ).length;
   return Math.max(byConcept, bySurge);
 }
 
-function highlightedStocksForPlate(plate: PlateFlow, ztList: TopicStock[]): MarketTrendTopic['highlightedStocks'] {
+function highlightedStocksForGroup(members: PlateFlow[], ztList: TopicStock[]): MarketTrendTopic['highlightedStocks'] {
   const seen = new Set<string>();
   return ztList
-    .filter((stock) => stockInPlate(stock, plate))
+    .filter((stock) => members.some((plate) => stockInPlate(stock, plate)))
     .sort((a, b) => b.lbc - a.lbc || a.time - b.time)
     .filter((stock) => {
       const code = normalizeCode(stock.code) || stock.name;
@@ -117,7 +125,7 @@ function pickCandidatePlates(plates: PlateFlow[], ztList: TopicStock[], surge: S
 }
 
 function toTopic(
-  plate: PlateFlow,
+  group: PlateGroup,
   index: number,
   flow: MarketTrendTopic['flow'],
   colors: string[],
@@ -127,8 +135,9 @@ function toTopic(
   score: number,
   amountChange: number
 ): MarketTrendTopic {
+  const plate = group.representative;
   const size = Math.max(plateSize(plate), 1);
-  const ztCount = ztCountForPlate(plate, ztList, surge);
+  const ztCount = ztCountForGroup(group.members, ztList, surge);
   const ztRatio = ztCount / size;
   const breadth = plate.upCount / size;
   return {
@@ -145,7 +154,8 @@ function toTopic(
     ztRatio,
     amountChange: amountChange * 100,
     phase: inferPhase(score),
-    highlightedStocks: highlightedStocksForPlate(plate, ztList),
+    highlightedStocks: highlightedStocksForGroup(group.members, ztList),
+    relatedPlates: group.related.length > 0 ? group.related : undefined,
   };
 }
 
@@ -178,14 +188,20 @@ export function buildSectorTrendData(
   const picked = pickCandidatePlates(plates, ztList, surge);
   if (picked.length === 0) return EMPTY_SECTOR_TREND;
 
-  const meanAmount = picked.reduce((sum, plate) => sum + plate.amount, 0) / picked.length || 1;
+  // 同题材归并：近义概念并成一组，只留代表板参与候选
+  const groups = dedupeCandidatePlates(picked, (plate) => ztCountForPlate(plate, ztList, surge));
+
+  const meanAmount =
+    groups.reduce((sum, group) => sum + group.representative.amount, 0) / groups.length || 1;
   const date = isoDate(latestDay);
-  const metrics = picked.map((plate) => {
+  const metrics = groups.map((group) => {
+    const plate = group.representative;
     const size = Math.max(plateSize(plate), 1);
     const breadth = plate.upCount / size;
     const amountChange = (plate.amount - meanAmount) / meanAmount;
     const flowIntensity = plate.amount > 0 ? plate.netFlow / plate.amount : 0;
     return {
+      group,
       plate,
       breadth,
       amountChange,
@@ -210,7 +226,7 @@ export function buildSectorTrendData(
     const score = clampScore(baseScore * getTrendPlateWeight(item.plate.name));
 
     return toTopic(
-      item.plate,
+      item.group,
       index,
       item.plate.netFlow >= 0 ? 'in' : 'out',
       item.plate.netFlow >= 0 ? INFLOW_COLORS : OUTFLOW_COLORS,
