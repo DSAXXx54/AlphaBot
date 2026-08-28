@@ -6,6 +6,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional, Awaitable
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,7 @@ from app.services.agent_service import AgentService
 from app.services.llm_registry import LLMRegistry, LLMProfileName
 from app.middleware.logging import logger
 from app.services.notification_service import send_channel_message
+from app.services.trading_calendar_service import TradingCalendarService
 
 
 def _slugify(value: str) -> str:
@@ -288,6 +290,32 @@ class AutomationService:
                 raise ValueError(f"用户不存在: {user_id}")
 
             skill_name = (params.get("skill_name") or "research").strip()
+            if skill_name == "ashare-daily-review":
+                timezone_name = str(params.get("timezone") or "Asia/Shanghai")
+                try:
+                    now = datetime.now(ZoneInfo(timezone_name))
+                except Exception:
+                    timezone_name = "Asia/Shanghai"
+                    now = datetime.now(ZoneInfo(timezone_name))
+
+                trade_date = now.date()
+                calendar = await TradingCalendarService.get_trade_calendar()
+                if trade_date not in calendar:
+                    latest_trading_day = await TradingCalendarService.latest_trading_day(trade_date)
+                    detail = f"今日 {trade_date.isoformat()} 非 A 股交易日，已跳过自动复盘。"
+                    if latest_trading_day:
+                        detail += f" 最近交易日为 {latest_trading_day.isoformat()}。"
+                    result = {
+                        "task_id": task_id,
+                        "status": "skipped",
+                        "reason": "non_trading_day",
+                        "trade_date": trade_date.isoformat(),
+                        "timezone": timezone_name,
+                        "latest_trading_day": latest_trading_day.isoformat() if latest_trading_day else None,
+                    }
+                    await cls._emit_progress(progress_callback, "skipped", detail, result)
+                    return result
+
             prompt_template = (params.get("prompt_template") or "").strip()
             if not prompt_template:
                 raise ValueError("缺少 prompt_template，无法执行自动化任务")
