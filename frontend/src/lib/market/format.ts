@@ -58,6 +58,13 @@ export function isTradingTime(now = new Date()): boolean {
   return (cm >= 555 && cm <= 690) || (cm >= 780 && cm <= 900);
 }
 
+/** 工作日 15:00 后（行情定稿）；周末返回 false，非交易日判定交给"锚定交易日 ≠ 今天" */
+export function isAfterMarketClose(now = new Date()): boolean {
+  const day = now.getDay();
+  if (day === 0 || day === 6) return false;
+  return now.getHours() * 60 + now.getMinutes() > 900;
+}
+
 export function normalizePlateName(name: string): string {
   return name
     .normalize('NFKC')
@@ -70,7 +77,7 @@ export function normalizePlateName(name: string): string {
     .trim();
 }
 
-/** 外部源（选股宝等）习惯命名 → 东财 t:3 概念名；命中别名后仍找不到则回落原名的常规匹配 */
+/** 外部源习惯命名 → 当前板块池名称；命中别名后仍找不到则回落原名的常规匹配 */
 const PLATE_NAME_ALIASES: Record<string, string> = {
   黄金: '黄金概念',
   折叠屏: '柔性屏(折叠屏)',

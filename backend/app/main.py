@@ -18,6 +18,8 @@ from app.services.worldcup_service import WorldCupService
 from app.services.sentiment_service import SentimentService
 from app.services.automation_service import AutomationService
 from app.core.mcp_host import McpHostRegistry
+import asyncio
+
 from app.middleware import RateLimitMiddleware, start_cleanup_task, stop_cleanup_task
 from app.middleware.logging import logging_middleware
 from app.utils.stock_utils import update_stock_data_with_db

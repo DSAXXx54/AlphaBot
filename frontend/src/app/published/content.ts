@@ -2,20 +2,8 @@ function isMetaLine(line: string): boolean {
   return line === 'Published Report' || /^发布时间[:：]/.test(line);
 }
 
-function isReportTitleLine(line: string): boolean {
-  const normalized = line.replace(/^#+\s*/, '').trim();
-  if (!normalized) {
-    return false;
-  }
-
-  if (normalized.length > 48) {
-    return false;
-  }
-
-  return (
-    /(?:报告|复盘|日报|简报)$/.test(normalized) ||
-    /(?:报告|复盘|日报|简报)/.test(normalized) && /\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2})?/.test(normalized)
-  );
+function isMarkdownH1(line: string): boolean {
+  return /^#(?!#)\s+/.test(line.trim());
 }
 
 export function normalizePublishedContent(content: string): string {
@@ -39,7 +27,7 @@ export function normalizePublishedContent(content: string): string {
       continue;
     }
 
-    if (!removedTitle && isReportTitleLine(current)) {
+    if (!removedTitle && isMarkdownH1(current)) {
       lines.shift();
       removedTitle = true;
       continue;

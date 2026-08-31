@@ -2,6 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { loadPlateFlowHistory, loadPlateMembers, type PlateFlowHistoryPoint, type PlateMember } from '@/lib/market/api';
+import { flowStrengthScore, percentileRank } from '@/lib/market/flowStrength';
+import { getStrategy } from '@/lib/market/strategy';
 import type { MarketTrendPanelData, MarketTrendStage, MarketTrendTopic } from '@/lib/market/types';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -11,12 +13,13 @@ type SectorTrendTrajectoryProps = {
   onSelectStock?: (code: string, name: string) => void;
 };
 
-type MemberSortKey = 'rank' | 'changePercent' | 'amount' | 'turnoverRate';
+type MemberSortKey = 'rank' | 'changePercent' | 'amount' | 'netFlow' | 'turnoverRate';
 
 type TrendMember = {
   rank: number;
   code: string;
   name: string;
+  lbc: number;
   changePercent: number;
   amount: number;
   netFlow: number;
@@ -29,7 +32,7 @@ type TrendMember = {
 type TopicHistoryPoint = {
   date: string;
   expmaValue: number;
-  expmaDeltaPct: number;
+  expmaRatioPct: number;
   strengthScore: number;
   mainNetInflow: number;
   mainNetInflowRatio: number;
@@ -42,6 +45,8 @@ type TopicHistoryPoint = {
   smallNetInflow: number;
   smallNetInflowRatio: number;
   rank: number;
+  /** 兜底占位点（历史未加载）：不参与当日百分位与排名 */
+  excluded?: boolean;
 };
 
 type SectorPulseState = '加强' | '新启动' | '修复' | '分歧' | '退潮' | '冷却';
@@ -83,8 +88,7 @@ type LadderRow = {
 const SVG_WIDTH = 1000;
 const SVG_HEIGHT = 372;
 const PAD = { top: 20, right: 112, bottom: 34, left: 44 };
-const Y_TICKS = [0, 35, 55, 75, 100];
-const PHASE_STYLES: Record<MarketTrendStage, string> = {
+/** 分区/脉冲阈值来自 strategy.ts 的 trend 节点（标定依据见该文件与回测记录）。 */const PHASE_STYLES: Record<MarketTrendStage, string> = {
   主升: 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-200',
   发酵: 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-200',
   分歧: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-950/40 dark:text-yellow-200',
@@ -172,9 +176,10 @@ function xFor(index: number, total: number) {
 }
 
 function stageForScore(score: number): MarketTrendStage {
-  if (score >= 75) return '主升';
-  if (score >= 55) return '发酵';
-  if (score >= 35) return '震荡';
+  const { zones } = getStrategy().trend;
+  if (score >= zones.main) return '主升';
+  if (score >= zones.strong) return '发酵';
+  if (score >= zones.watch) return '震荡';
   return '退潮';
 }
 
@@ -196,7 +201,7 @@ function calcExpma(values: number[], period = 3) {
 }
 
 function buildExpmaDomain(series: TopicHistoryPoint[][]) {
-  const values = series.flatMap((points) => points.map((point) => point.expmaDeltaPct).filter((value) => Number.isFinite(value)));
+  const values = series.flatMap((points) => points.map((point) => point.expmaRatioPct).filter((value) => Number.isFinite(value)));
   if (values.length === 0) return { min: -1, max: 1 };
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -213,23 +218,12 @@ function buildNumericTicks(min: number, max: number, count = 5) {
   return Array.from({ length: count }, (_, index) => min + ((max - min) * index) / (count - 1));
 }
 
-function flowStrengthScore(point: PlateFlowHistoryPoint, scale: number) {
-  const amountComponent = Math.max(-1, Math.min(1, point.mainNetInflow / scale));
-  const ratioComponent = Math.max(-1, Math.min(1, point.mainNetInflowRatio / 8));
-  const bigOrderComponent = Math.max(-1, Math.min(1, (point.superLargeNetInflowRatio + point.largeNetInflowRatio) / 12));
-  const defensivePenalty = Math.max(-1, Math.min(1, (point.midNetInflowRatio + point.smallNetInflowRatio) / 18));
-  return Math.max(
-    0,
-    Math.min(100, 50 + amountComponent * 24 + ratioComponent * 16 + bigOrderComponent * 12 - defensivePenalty * 6)
-  );
-}
-
 function fallbackHistoryPoint(topic: MarketTrendTopic, rank: number): TopicHistoryPoint {
   return {
     date: topic.date,
-    expmaValue: topic.moneyFlow,
-    expmaDeltaPct: 0,
-    strengthScore: topic.score,
+    expmaValue: 0,
+    expmaRatioPct: 0,
+    strengthScore: 50,
     mainNetInflow: topic.moneyFlow,
     mainNetInflowRatio: 0,
     superLargeNetInflow: 0,
@@ -241,24 +235,22 @@ function fallbackHistoryPoint(topic: MarketTrendTopic, rank: number): TopicHisto
     smallNetInflow: 0,
     smallNetInflowRatio: 0,
     rank,
+    excluded: true,
   };
 }
 
 function buildTopicHistory(flowPoints: PlateFlowHistoryPoint[], topic: MarketTrendTopic): TopicHistoryPoint[] {
   if (flowPoints.length === 0) return [fallbackHistoryPoint(topic, 0)];
 
-  const scale = Math.max(
-    3,
-    Math.abs(topic.moneyFlow),
-    ...flowPoints.map((point) => Math.abs(point.mainNetInflow))
-  );
-  const expma = calcExpma(flowPoints.map((point) => point.mainNetInflow), 3);
+  // 折线 = 净流入占比（净额/成交额，无量纲）的 EXPMA(3)，单位 %，跨板块可比；
+  // 旧口径按各板块自身最大净流入归一，多线叠画在同一轴上是伪对比，已废弃
+  const expma = calcExpma(flowPoints.map((point) => point.mainNetInflowRatio), 3);
 
   return flowPoints.map((point, index) => ({
     date: `${point.date.slice(0, 4)}-${point.date.slice(4, 6)}-${point.date.slice(6, 8)}`,
-    expmaValue: expma[index] || point.mainNetInflow || 0,
-    expmaDeltaPct: ((expma[index] || point.mainNetInflow || 0) / scale) * 100,
-    strengthScore: flowStrengthScore(point, scale),
+    expmaValue: expma[index] || point.mainNetInflowRatio || 0,
+    expmaRatioPct: expma[index] ?? point.mainNetInflowRatio ?? 0,
+    strengthScore: flowStrengthScore(point, 50),
     mainNetInflow: point.mainNetInflow,
     mainNetInflowRatio: point.mainNetInflowRatio,
     superLargeNetInflow: point.superLargeNetInflow,
@@ -281,8 +273,11 @@ function rankDeltaFromTail(points: TopicHistoryPoint[], offset: number) {
 }
 
 function classifyPulse(topic: MarketTrendTopic, points: TopicHistoryPoint[]) {
+  const { zones, pulseDelta3d: PULSE_DELTA3D } = getStrategy().trend;
+  const SCORE_ZONE_MAIN = zones.main;
+  const SCORE_ZONE_STRONG = zones.strong;
   const scores = points.map((point) => point.strengthScore);
-  const expma = points.map((point) => point.expmaDeltaPct);
+  const expma = points.map((point) => point.expmaRatioPct);
   const flows = points.map((point) => point.mainNetInflow);
   const latestScore = scores[scores.length - 1] ?? topic.score;
   const scoreDelta1d = deltaFromTail(scores, 1);
@@ -294,19 +289,19 @@ function classifyPulse(topic: MarketTrendTopic, points: TopicHistoryPoint[]) {
   const latestRank = points[points.length - 1]?.rank ?? 0;
   const rankDelta3d = rankDeltaFromTail(points, 3);
 
-  if (latestScore >= 72 && scoreDelta3d >= 8 && flowDelta3d >= 0 && latestRatio >= 0) {
+  if (latestScore >= SCORE_ZONE_MAIN && scoreDelta3d >= PULSE_DELTA3D && flowDelta3d >= 0 && latestRatio >= 0) {
     return { state: '加强' as const, stateReason: '主力净流入与净占比同步走强，趋势仍在抬升', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
   }
-  if (latestScore >= 58 && rankDelta3d >= 3 && flowDelta3d > 0) {
+  if (latestScore >= SCORE_ZONE_STRONG && rankDelta3d >= 3 && flowDelta3d > 0) {
     return { state: '新启动' as const, stateReason: '近几日主力排名快速抬升，具备资金新启动特征', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
   }
-  if (scoreDelta3d > 0 && flowDelta3d > 0 && latestRatio > 0 && latestScore < 72) {
+  if (scoreDelta3d > 0 && flowDelta3d > 0 && latestRatio > 0 && latestScore < SCORE_ZONE_MAIN) {
     return { state: '修复' as const, stateReason: '资金重新回流，但强度中枢仍低于主升区', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
   }
   if (latestScore >= 50 && (scoreDelta1d < 0 || flowDelta1d < 0 || expmaDelta1d < 0) && latestRatio > -1.5) {
     return { state: '分歧' as const, stateReason: '板块仍有活跃度，但主力净流入开始放缓', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
   }
-  if (scoreDelta3d <= -8 || flowDelta3d < 0 || latestRatio < -2) {
+  if (scoreDelta3d <= -PULSE_DELTA3D || flowDelta3d < 0 || latestRatio < -2) {
     return { state: '退潮' as const, stateReason: '真实资金流持续走弱，排名与强度中枢下移', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
   }
   return { state: '冷却' as const, stateReason: '当前缺少持续强化信号，资金尚未形成明确方向', scoreDelta1d, scoreDelta3d, flowDelta1d, flowDelta3d, expmaDelta1d, rankDelta3d, latestRank };
@@ -314,7 +309,7 @@ function classifyPulse(topic: MarketTrendTopic, points: TopicHistoryPoint[]) {
 
 function linePath(points: TopicHistoryPoint[], yForExpma: (value: number) => number) {
   return points
-    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(index, points.length).toFixed(1)} ${yForExpma(point.expmaDeltaPct).toFixed(1)}`)
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(index, points.length).toFixed(1)} ${yForExpma(point.expmaRatioPct).toFixed(1)}`)
     .join(' ');
 }
 
@@ -381,12 +376,14 @@ function endLabelPosition(index: number, values: Array<{ id: string; y: number }
 }
 
 export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTrendTrajectoryProps) {
+  const trendCfg = getStrategy().trend;
+  const yTicks = [0, trendCfg.zones.watch, trendCfg.zones.strong, trendCfg.zones.main, 100];
   const topics = useMemo(() => data.topics || [], [data.topics]);
   const [selectedId, setSelectedId] = useState<string | null>(topics[0]?.id ?? null);
   const [viewMode, setViewMode] = useState<RankingViewMode>('today');
   const [histories, setHistories] = useState<Record<string, TopicHistoryPoint[]>>({});
   const [membersById, setMembersById] = useState<Record<string, TrendMember[]>>({});
-  const [sortBy, setSortBy] = useState<{ key: MemberSortKey; dir: 'asc' | 'desc' }>({ key: 'rank', dir: 'asc' });
+  const [sortBy, setSortBy] = useState<{ key: MemberSortKey; dir: 'asc' | 'desc' }>({ key: 'changePercent', dir: 'desc' });
   const [hover, setHover] = useState<{ topicId: string; pointIndex: number } | null>(null);
   const [detailHoverIndex, setDetailHoverIndex] = useState<number | null>(null);
 
@@ -405,9 +402,9 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
   }, [selectedId, viewMode]);
 
   useEffect(() => {
-    if (!selectedId || membersById[selectedId]) return;
+    if (!selectedId) return;
     let active = true;
-    loadPlateMembers(selectedId, false)
+    loadPlateMembers(selectedId)
       .then((members) => {
         if (!active) return;
         setMembersById((current) => ({
@@ -416,6 +413,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
             rank: index + 1,
             code: item.code,
             name: item.name,
+            lbc: data.stockTags[item.code]?.lbc || 0,
             changePercent: item.change,
             amount: item.amount,
             netFlow: item.netFlow,
@@ -430,32 +428,59 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
     return () => {
       active = false;
     };
-  }, [data.stockTags, membersById, selectedId]);
+  }, [data.stockTags, selectedId]);
 
   const historiesWithRank = useMemo(() => {
-    const byDate = new Map<string, Array<{ id: string; score: number; flow: number }>>();
-    Object.entries(histories).forEach(([topicId, points]) => {
+    // Pass 1：同日候选净流入百分位（兜底占位点不参与基数）
+    const flowsByDate = new Map<string, number[]>();
+    Object.values(histories).forEach((points) => {
       points.forEach((point) => {
-        const rows = byDate.get(point.date) || [];
-        rows.push({ id: topicId, score: point.strengthScore, flow: point.mainNetInflow });
-        byDate.set(point.date, rows);
+        if (point.excluded) return;
+        const rows = flowsByDate.get(point.date) || [];
+        rows.push(point.mainNetInflow);
+        flowsByDate.set(point.date, rows);
       });
     });
 
+    // Pass 2：回填最终 strengthScore（金额项 = 同日百分位）
+    const scored = new Map<string, TopicHistoryPoint[]>();
+    Object.entries(histories).forEach(([topicId, points]) => {
+      scored.set(
+        topicId,
+        points.map((point) => ({
+          ...point,
+          strengthScore: point.excluded
+            ? point.strengthScore
+            : flowStrengthScore(point, percentileRank(flowsByDate.get(point.date) || [], point.mainNetInflow)),
+        }))
+      );
+    });
+
+    // Pass 3：按最终分做每日排名（兜底占位点不参与）
+    const rankRows = new Map<string, Array<{ id: string; score: number; flow: number }>>();
+    scored.forEach((points, topicId) => {
+      points.forEach((point) => {
+        if (point.excluded) return;
+        const rows = rankRows.get(point.date) || [];
+        rows.push({ id: topicId, score: point.strengthScore, flow: point.mainNetInflow });
+        rankRows.set(point.date, rows);
+      });
+    });
     const rankMap = new Map<string, Map<string, number>>();
-    byDate.forEach((rows, date) => {
+    rankRows.forEach((rows, date) => {
       const ranked = [...rows].sort((a, b) => b.score - a.score || b.flow - a.flow);
       rankMap.set(date, new Map(ranked.map((row, index) => [row.id, index + 1])));
     });
 
     return Object.fromEntries(
       topics.map((topic, topicIndex) => {
-        const basePoints = histories[topic.id] || [fallbackHistoryPoint(topic, topicIndex + 1)];
+        const basePoints = scored.get(topic.id) || [fallbackHistoryPoint(topic, topicIndex + 1)];
         return [
           topic.id,
           basePoints.map((point) => ({
             ...point,
-            rank: rankMap.get(point.date)?.get(topic.id) || point.rank || topicIndex + 1,
+            rank:
+              rankMap.get(point.date)?.get(topic.id) || point.rank || topicIndex + 1,
           })),
         ];
       })
@@ -524,26 +549,25 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
   );
 
   const activeTopicInsights = viewMode === 'today' ? todayTopicInsights : trendTopicInsights;
+  // 默认只拉当前选中板块的历史；切到趋势视角后再补齐候选历史，降低首屏 fundflow 压力
   const historyTargetIds = useMemo(() => {
-    const ids = new Set(activeTopicInsights.map((item) => item.topic.id));
+    const ids = new Set<string>();
     if (selectedId) ids.add(selectedId);
+    if (viewMode === 'trend') {
+      topics.forEach((topic) => ids.add(topic.id));
+    }
     return Array.from(ids);
-  }, [activeTopicInsights, selectedId]);
+  }, [topics, selectedId, viewMode]);
   const selectedInsight = activeTopicInsights.find((item) => item.topic.id === selectedId) || activeTopicInsights[0] || null;
   const selectedTopic = selectedInsight?.topic || null;
   const activeHistory = selectedInsight?.points || [];
 
   useEffect(() => {
-    const missing = historyTargetIds.filter((id) => !histories[id]);
-    if (missing.length === 0) return;
+    if (historyTargetIds.length === 0) return;
     let active = true;
-    const ordered = [
-      ...(selectedId && missing.includes(selectedId) ? [selectedId] : []),
-      ...missing.filter((id) => id !== selectedId),
-    ];
 
     const consumeBatch = async (batchIds: string[]) => {
-      const results = await Promise.all(batchIds.map((id) => loadPlateFlowHistory(id, data.range || 20, false)));
+      const results = await Promise.all(batchIds.map((id) => loadPlateFlowHistory(id, data.range || 20)));
       if (!active) return;
       setHistories((current) => {
         const next = { ...current };
@@ -558,11 +582,8 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
 
     (async () => {
       try {
-        if (ordered.length > 0) {
-          await consumeBatch(ordered.slice(0, 1));
-        }
-        for (let index = 1; index < ordered.length; index += 3) {
-          await consumeBatch(ordered.slice(index, index + 3));
+        for (let index = 0; index < historyTargetIds.length; index += 3) {
+          await consumeBatch(historyTargetIds.slice(index, index + 3));
         }
       } catch {
         // keep current history cache
@@ -571,7 +592,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
     return () => {
       active = false;
     };
-  }, [data.range, histories, historyTargetIds, selectedId, topics]);
+  }, [data.range, historyTargetIds, topics]);
 
   const pulseSummary = useMemo(() => {
     const count = (state: SectorPulseState) => topicInsights.filter((item) => item.state === state).length;
@@ -604,16 +625,21 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
   const xLabels = activeHistory.map((point) => point.date);
   const endPoints = chartTopics.map(({ topic, points }) => ({
     id: topic.id,
-    y: yForExpma(points[points.length - 1]?.expmaDeltaPct ?? 0),
+    y: yForExpma(points[points.length - 1]?.expmaRatioPct ?? 0),
   }));
 
   const sortedMembers = useMemo(() => {
     const values = [...(membersById[selectedId || ''] || [])];
     values.sort((a, b) => {
+      if (sortBy.key === 'changePercent' && sortBy.dir === 'desc') {
+        const lbcDelta = b.lbc - a.lbc;
+        if (lbcDelta !== 0) return lbcDelta;
+      }
       const left = a[sortBy.key];
       const right = b[sortBy.key];
       const delta = Number(left) - Number(right);
-      return sortBy.dir === 'asc' ? delta : -delta;
+      if (delta !== 0) return sortBy.dir === 'asc' ? delta : -delta;
+      return b.netFlow - a.netFlow || b.amount - a.amount || a.rank - b.rank;
     });
     return values;
   }, [membersById, selectedId, sortBy]);
@@ -681,14 +707,15 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
       });
     }
     if (follower) {
+      const followerNote =
+        highlighted.some((item) => item.code === follower.code)
+          ? `${boardHeightLabel((follower as (typeof highlighted)[number]).lbc)}，处于扩散补位阶段`
+          : `${formatPercent((follower as TrendMember).changePercent, 1)}，低位资金开始跟随`;
       roles.push({
         role: '补涨',
         name: follower.name,
         code: follower.code,
-        note:
-          'lbc' in follower
-            ? `${boardHeightLabel(follower.lbc)}，处于扩散补位阶段`
-            : `${formatPercent(follower.changePercent, 1)}，低位资金开始跟随`,
+        note: followerNote,
       });
     }
     return roles;
@@ -730,6 +757,17 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
               <span className="h-3 w-px bg-border/60" />
               <span>最终候选 {data.sampleStats.finalCount}</span>
             </div>
+            {data.droppedBoards && data.droppedBoards.length > 0 ? (
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-amber-700/90 dark:text-amber-300/80">
+                <span>近5日跌出候选:</span>
+                {data.droppedBoards.map((board) => (
+                  <span key={board.name}>
+                    {board.name}
+                    <span className="text-muted-foreground">（{board.lastSeen}）</span>
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
           <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
             {pulseSummary.map((item) => (
@@ -855,8 +893,8 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                     <div>
                       {viewMode === 'today' ? (
                         <>
-                          <div className="text-xs text-muted-foreground">成交额</div>
-                          <div className="mt-1 text-sm font-semibold text-foreground">{formatYi(item.topic.turnover)}</div>
+                          <div className="text-xs text-muted-foreground">涨停家数</div>
+                          <div className="mt-1 text-sm font-semibold text-foreground">{item.topic.ztCount}家</div>
                         </>
                       ) : (
                         <>
@@ -906,8 +944,8 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                       <span className="text-foreground">{selectedInsight.topic.score.toFixed(1)}</span>
                     </div>
                     <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
-                      <span>成交额</span>
-                      <span className="text-foreground">{formatYi(selectedInsight.topic.turnover)}</span>
+                      <span>涨停家数</span>
+                      <span className="text-foreground">{selectedInsight.topic.ztCount}家</span>
                     </div>
                   </div>
                   <div className="rounded-[18px] border border-border/60 px-3.5 py-3">
@@ -945,10 +983,6 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                     const scoreMin = Math.min(...scoreValues);
                     const scoreMax = Math.max(...scoreValues);
                     const scoreRange = scoreMax - scoreMin || 1;
-                    const ratioValues = sparkPoints.map((point) => point.mainNetInflowRatio);
-                    const ratioMin = Math.min(...ratioValues, -2);
-                    const ratioMax = Math.max(...ratioValues, 2);
-                    const ratioRange = ratioMax - ratioMin || 1;
                     const previewIndex = detailHoverIndex ?? Math.max(0, sparkPoints.length - 1);
                     const activePoint = detailHoverIndex !== null ? sparkPoints[detailHoverIndex] : null;
                     const activePrev = detailHoverIndex !== null ? sparkPoints[Math.max(0, detailHoverIndex - 1)] : null;
@@ -959,14 +993,13 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                         ).state
                       : null;
 
-                    const scoreY = (value: number) => 88 - ((value - scoreMin) / scoreRange) * 88;
-                    const ratioY = (value: number) => 108 - ((value - ratioMin) / ratioRange) * 24;
+                    const scoreY = (value: number) => 108 - ((value - scoreMin) / scoreRange) * 94;
 
                     return (
                       <>
                         <div className="relative" onMouseLeave={() => setDetailHoverIndex(null)}>
-                          <svg viewBox="0 0 320 132" className="h-[148px] w-full">
-                            <line x1="0" y1="108" x2="320" y2="108" stroke="currentColor" opacity="0.08" />
+                          <svg viewBox="0 0 320 132" className="h-[136px] w-full">
+                            <text x="2" y="10" fontSize="8" fill="currentColor" opacity="0.5">资金强度</text>
                             <path
                               d={sparkPoints
                                 .map((point, index) => {
@@ -977,19 +1010,6 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                               fill="none"
                               stroke={selectedInsight.topic.color}
                               strokeWidth="3"
-                              strokeLinecap="round"
-                            />
-                            <path
-                              d={sparkPoints
-                                .map((point, index) => {
-                                  const x = sparkPoints.length <= 1 ? 160 : (320 * index) / (sparkPoints.length - 1);
-                                  return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${ratioY(point.mainNetInflowRatio).toFixed(1)}`;
-                                })
-                                .join(' ')}
-                              fill="none"
-                              stroke="#94a3b8"
-                              strokeWidth="1.5"
-                              strokeDasharray="4 4"
                               strokeLinecap="round"
                             />
                             {sparkPoints.map((point, index, arr) => {
@@ -1004,7 +1024,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                               const isActive = index === previewIndex;
                               return (
                                 <g key={`spark-${point.date}`}>
-                                  {isRecent ? <line x1={x} y1="16" x2={x} y2="114" stroke="currentColor" opacity={isActive ? 0.12 : 0.06} strokeDasharray="3 5" /> : null}
+                                  {isRecent ? <line x1={x} y1="14" x2={x} y2="110" stroke="currentColor" opacity={isActive ? 0.12 : 0.06} strokeDasharray="3 5" /> : null}
                                   <circle
                                     cx={x}
                                     cy={y}
@@ -1014,22 +1034,13 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                                     strokeWidth={isRecent ? (isActive ? 3 : 2.2) : 0}
                                     onMouseEnter={() => setDetailHoverIndex(index)}
                                   />
-                                  {isRecent ? (
-                                    <circle
-                                      cx={x}
-                                      cy={ratioY(point.mainNetInflowRatio)}
-                                      r={isActive ? 4 : 3.2}
-                                      fill="#94a3b8"
-                                      onMouseEnter={() => setDetailHoverIndex(index)}
-                                    />
-                                  ) : null}
                                   {(index === 0 || index === arr.length - 1 || index % 3 === 0) && (
                                     <text x={x} y="126" textAnchor="middle" fontSize="9" fill="currentColor" opacity="0.55">
                                       {shortDate(point.date)}
                                     </text>
                                   )}
                                   {isRecent && isActive ? (
-                                    <text x={x} y={Math.max(12, y - 10)} textAnchor="middle" fontSize="9" fill="currentColor" opacity="0.82">
+                                    <text x={x} y={Math.max(14, y - 10)} textAnchor="middle" fontSize="9" fill="currentColor" opacity="0.82">
                                       {state}
                                     </text>
                                   ) : null}
@@ -1051,9 +1062,6 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                           ) : null}
                         </div>
                         <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-                          <span>资金强度 1D {formatPercent(selectedInsight.scoreDelta1d, 1)}</span>
-                          <span>资金 3D {formatSignedYi(selectedInsight.flowDelta3d)}</span>
-                          <span>虚线: 主力净流入占比</span>
                           <span>彩环点: 近5日状态</span>
                         </div>
                       </>
@@ -1117,21 +1125,26 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
         <div className="overflow-hidden rounded-[26px] border border-border/70 bg-background shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
           <div className="border-b border-border/60 px-4 py-3.5">
             <div className="text-sm font-semibold text-foreground">历史资金强度时序</div>
-            <div className="mt-1 text-xs text-muted-foreground">柱体看每日资金强度，折线看真实资金流 EXPMA(3) 偏离；它和排行榜里的综合强度是两套口径。</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              柱体: 每日资金强度（同日候选百分位口径）；折线: 净流入占比 EXPMA(3)，跨板块可比。
+            </div>
           </div>
           <div className="relative overflow-x-auto">
             <svg viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} className="min-w-[980px] w-full" onMouseLeave={() => setHover(null)}>
-              <rect x={PAD.left} y={PAD.top} width={SVG_WIDTH - PAD.left - PAD.right} height={yForStrength(75) - PAD.top} fill="rgba(255,110,128,0.04)" rx="24" />
-              <rect x={PAD.left} y={yForStrength(75)} width={SVG_WIDTH - PAD.left - PAD.right} height={yForStrength(55) - yForStrength(75)} fill="rgba(251,146,60,0.045)" rx="24" />
-              <rect x={PAD.left} y={yForStrength(55)} width={SVG_WIDTH - PAD.left - PAD.right} height={yForStrength(35) - yForStrength(55)} fill="rgba(250,204,21,0.04)" rx="24" />
-              <rect x={PAD.left} y={yForStrength(35)} width={SVG_WIDTH - PAD.left - PAD.right} height={barBaseY() - yForStrength(35)} fill="rgba(148,163,184,0.04)" rx="24" />
+              <rect x={PAD.left} y={PAD.top} width={SVG_WIDTH - PAD.left - PAD.right} height={yForStrength(trendCfg.zones.main) - PAD.top} fill="rgba(255,110,128,0.04)" rx="24" />
+              <rect x={PAD.left} y={yForStrength(trendCfg.zones.main)} width={SVG_WIDTH - PAD.left - PAD.right} height={yForStrength(trendCfg.zones.strong) - yForStrength(trendCfg.zones.main)} fill="rgba(251,146,60,0.045)" rx="24" />
+              <rect x={PAD.left} y={yForStrength(trendCfg.zones.strong)} width={SVG_WIDTH - PAD.left - PAD.right} height={yForStrength(trendCfg.zones.watch) - yForStrength(trendCfg.zones.strong)} fill="rgba(250,204,21,0.04)" rx="24" />
+              <rect x={PAD.left} y={yForStrength(trendCfg.zones.watch)} width={SVG_WIDTH - PAD.left - PAD.right} height={barBaseY() - yForStrength(trendCfg.zones.watch)} fill="rgba(148,163,184,0.04)" rx="24" />
 
               <text x={PAD.left + 10} y={PAD.top + 14} fontSize="9" fill="currentColor" opacity="0.46">主升区</text>
-              <text x={PAD.left + 10} y={yForStrength(75) + 14} fontSize="9" fill="currentColor" opacity="0.42">强势区</text>
-              <text x={PAD.left + 10} y={yForStrength(55) + 14} fontSize="9" fill="currentColor" opacity="0.38">观察区</text>
-              <text x={PAD.left + 10} y={yForStrength(35) + 14} fontSize="9" fill="currentColor" opacity="0.36">冷却区</text>
+              <text x={PAD.left + 10} y={yForStrength(trendCfg.zones.main) + 14} fontSize="9" fill="currentColor" opacity="0.42">强势区</text>
+              <text x={PAD.left + 10} y={yForStrength(trendCfg.zones.strong) + 14} fontSize="9" fill="currentColor" opacity="0.38">观察区</text>
+              <text x={PAD.left + 10} y={yForStrength(trendCfg.zones.watch) + 14} fontSize="9" fill="currentColor" opacity="0.36">冷却区</text>
+              <text x={SVG_WIDTH - PAD.right - 10} y={PAD.top + 14} fontSize="9" textAnchor="end" fill="currentColor" opacity="0.46">
+                实线 = 净流入板块 · 虚线 = 净流出板块
+              </text>
 
-              {Y_TICKS.map((value) => (
+              {yTicks.map((value) => (
                 <g key={value}>
                   <line x1={PAD.left} y1={yForStrength(value)} x2={SVG_WIDTH - PAD.right} y2={yForStrength(value)} stroke="rgba(148,163,184,0.18)" strokeDasharray="5 8" />
                   <text x={10} y={yForStrength(value) + 4} fontSize="9" fill="currentColor" opacity="0.52">
@@ -1151,7 +1164,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
               {xLabels.map((label, index) => (
                 <g key={label}>
                   <line x1={xFor(index, xLabels.length)} y1={PAD.top} x2={xFor(index, xLabels.length)} y2={SVG_HEIGHT - PAD.bottom} stroke="rgba(148,163,184,0.08)" />
-                  {(index === 0 || index === xLabels.length - 1 || index % 4 === 0) && (
+                  {(index === 0 || index === xLabels.length - 1 || index % 2 === 0) && (
                     <text x={xFor(index, xLabels.length)} y={SVG_HEIGHT - 14} textAnchor="middle" fontSize="9" fill="currentColor" opacity="0.56">
                       {shortDate(label)}
                     </text>
@@ -1159,27 +1172,79 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                 </g>
               ))}
 
-              {selectedTopic && activeHistory.length > 0
-                ? activeHistory.map((point, index) => {
-                    const width = Math.max(7, (SVG_WIDTH - PAD.left - PAD.right) / Math.max(activeHistory.length, 20) - 10);
-                    const x = xFor(index, activeHistory.length) - width / 2;
-                    const active = hover?.topicId === selectedTopic.id && hover.pointIndex === index;
-                    return (
+              {hover ? (
+                <line
+                  x1={xFor(hover.pointIndex, xLabels.length)}
+                  y1={PAD.top}
+                  x2={xFor(hover.pointIndex, xLabels.length)}
+                  y2={SVG_HEIGHT - PAD.bottom}
+                  stroke="rgba(148,163,184,0.4)"
+                  strokeDasharray="3 4"
+                />
+              ) : null}
+
+              {(() => {
+                // 柱体跟随 hover：悬停其他板块折线时切换显示该板块的资金强度
+                const barTopicId = hover?.topicId ?? selectedTopic?.id ?? null;
+                const barEntry = chartTopics.find(({ topic }) => topic.id === barTopicId);
+                if (!barEntry || barEntry.points.length === 0) return null;
+                const { topic: barTopic, points: barHistory } = barEntry;
+                // 主升区进出事件：相邻两日跨越 SCORE_ZONE_MAIN 视为事件点
+                const events = barHistory
+                  .map((point, index) => {
+                    const prev = barHistory[index - 1];
+                    if (!prev) return null;
+                    if (prev.strengthScore < trendCfg.zones.main && point.strengthScore >= trendCfg.zones.main) return { index, kind: 'in' as const };
+                    if (prev.strengthScore >= trendCfg.zones.main && point.strengthScore < trendCfg.zones.main) return { index, kind: 'out' as const };
+                    return null;
+                  })
+                  .filter((event): event is { index: number; kind: 'in' | 'out' } => event !== null);
+                return barHistory.map((point, index) => {
+                  const width = Math.max(7, (SVG_WIDTH - PAD.left - PAD.right) / Math.max(barHistory.length, 20) - 10);
+                  const x = xFor(index, barHistory.length) - width / 2;
+                  const center = x + width / 2;
+                  const active = hover?.topicId === barTopic.id && hover.pointIndex === index;
+                  const event = events.find((item) => item.index === index);
+                  const markerY = Math.max(PAD.top + 12, barTopFor(point.strengthScore) - 8);
+                  return (
+                    <g key={`bar-${barTopic.id}-${point.date}`}>
                       <rect
-                        key={`bar-${point.date}`}
                         x={x}
                         y={barTopFor(point.strengthScore)}
                         width={width}
                         height={barBaseY() - barTopFor(point.strengthScore)}
                         rx="4"
-                        fill={selectedTopic.color}
+                        fill={barTopic.color}
                         fillOpacity={active ? 0.24 : 0.1}
                         stroke={active ? 'rgba(255,255,255,0.75)' : 'none'}
                         strokeWidth={active ? 1 : 0}
                       />
-                    );
-                  })
-                : null}
+                      {event ? (
+                        <>
+                          <polygon
+                            points={
+                              event.kind === 'in'
+                                ? `${center},${markerY - 5} ${center - 4.5},${markerY + 3} ${center + 4.5},${markerY + 3}`
+                                : `${center},${markerY + 3} ${center - 4.5},${markerY - 5} ${center + 4.5},${markerY - 5}`
+                            }
+                            fill={event.kind === 'in' ? '#e11d48' : '#64748b'}
+                          />
+                          <text
+                            x={center}
+                            y={event.kind === 'in' ? markerY - 8 : markerY + 13}
+                            textAnchor="middle"
+                            fontSize="8.5"
+                            fill={event.kind === 'in' ? '#e11d48' : '#64748b'}
+                            opacity="0.9"
+                          >
+                            {event.kind === 'in' ? '入主升' : '出主升'}
+                          </text>
+                        </>
+                      ) : null}
+                    </g>
+                  );
+                });
+              })()}
 
               {chartTopics.map(({ topic, points }) => {
                 const active = topic.id === selectedTopic?.id;
@@ -1202,7 +1267,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                         <g key={`${topic.id}-${point.date}`}>
                           <circle
                             cx={xFor(index, points.length)}
-                            cy={yForExpma(point.expmaDeltaPct)}
+                            cy={yForExpma(point.expmaRatioPct)}
                             r={active ? (index === points.length - 1 ? 6.6 : 4.2) : 2.8}
                             fill={topic.color}
                             fillOpacity={active ? 1 : 0.42}
@@ -1243,10 +1308,8 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                 <div className="font-medium text-foreground">{hoverTopic.topic.name}</div>
                 <div className="mt-1 text-muted-foreground">{hoverPoint.date}</div>
                 <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5">
-                  <div className="text-muted-foreground">EXPMA(3)</div>
-                  <div className="text-right text-foreground">{formatSignedYi(hoverPoint.expmaValue)}</div>
-                  <div className="text-muted-foreground">资金流斜率</div>
-                  <div className="text-right text-foreground">{formatPercent(hoverPoint.expmaDeltaPct, 1)}</div>
+                  <div className="text-muted-foreground">净占比 EXPMA(3)</div>
+                  <div className="text-right text-foreground">{formatPercent(hoverPoint.expmaValue, 2)}</div>
                   <div className="text-muted-foreground">日资金强度</div>
                   <div className="text-right text-foreground">{hoverPoint.strengthScore.toFixed(1)}</div>
                   <div className="text-muted-foreground">主力净流入</div>
@@ -1305,8 +1368,8 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
 
             <div className="grid w-full gap-3 text-sm sm:grid-cols-3 xl:max-w-[380px]">
               <div>
-                <div className="text-muted-foreground">成交额</div>
-                <div className="mt-1 text-sm font-semibold text-foreground">{formatYi(selectedTopic.turnover)}</div>
+                <div className="text-muted-foreground">涨停家数</div>
+                <div className="mt-1 text-sm font-semibold text-foreground">{selectedTopic.ztCount}家</div>
               </div>
               <div>
                 <div className="text-muted-foreground">资金流</div>
@@ -1343,7 +1406,11 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                         成交额
                       </button>
                     </th>
-                    <th className="px-5 py-3.5 font-medium">资金净流入</th>
+                    <th className="px-5 py-3.5 font-medium">
+                      <button type="button" className="hover:text-foreground" onClick={() => toggleSort('netFlow')}>
+                        资金净流入
+                      </button>
+                    </th>
                     <th className="px-5 py-3.5 font-medium">
                       <button type="button" className="hover:text-foreground" onClick={() => toggleSort('turnoverRate')}>
                         换手率
@@ -1359,9 +1426,9 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                       </td>
                     </tr>
                   ) : (
-                    sortedMembers.map((member) => (
+                    sortedMembers.map((member, index) => (
                       <tr key={`${selectedTopic.id}-${member.code}`} className="border-t border-border/50 text-sm hover:bg-muted/20">
-                        <td className="px-5 py-3 text-foreground">{member.rank}</td>
+                        <td className="px-5 py-3 text-foreground">{index + 1}</td>
                         <td className="px-5 py-3 text-muted-foreground">{member.code}</td>
                         <td className="px-5 py-3 font-medium text-foreground">
                           <button

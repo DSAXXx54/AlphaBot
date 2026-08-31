@@ -5,11 +5,13 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import { StockInfo } from '../types';
 import { ChartLine, Search, Settings, Info, Bot, LogIn, User, LogOut, Key, Flame, Trophy, Sparkles, RefreshCw, Lock } from 'lucide-react';
 import { Button } from '../components/ui/button';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useAccounts } from '@/lib/contexts/AccountContext';
-import { isTradingTime, yyyymmdd } from '@/lib/market/format';
+import { isAfterMarketClose, isTradingTime, yyyymmdd } from '@/lib/market/format';
+import { getStrategy } from '@/lib/market/strategy';
 import { searchStocks } from '@/lib/api';
 import {
   DEFAULT_MARKET_SNAPSHOT,
@@ -19,7 +21,7 @@ import {
   loadPayoffSnapshot,
   loadTrendSnapshot,
 } from '@/lib/market/snapshot';
-import type { MarketCardLabel, MarketSnapshot, RelaySnapshot } from '@/lib/market/types';
+import type { MarketCardLabel, MarketSnapshot, ReboundPick, RelaySnapshot } from '@/lib/market/types';
 import { isAuthRequiredView, loginUrl, parseHomeView } from '@/lib/authRedirect';
 
 const StockSearch = dynamic(() => import('../components/StockSearch'), { ssr: false });
@@ -116,6 +118,8 @@ const EMPTY_CARD_DETAILS: Record<MarketCardLabel, boolean> = {
 };
 const MARKET_TRADING_RELOAD_MS = 60_000;
 const RELAY_UNLOCK_POINTS = 1000;
+const EASTMONEY_PICTURE_TOKEN = '44c9d251add88e27b65ed86506f6e5da';
+const EASTMONEY_PICTURE_RT = '1855';
 
 type MarketPageLoadMeta = {
   sessionKey: string;
@@ -143,10 +147,116 @@ function boardHeightLabel(lbc: number) {
   return `${lbc}板`;
 }
 
-function isAfterMarketClose(now = new Date()): boolean {
-  const day = now.getDay();
-  if (day === 0 || day === 6) return false;
-  return now.getHours() * 60 + now.getMinutes() > 900;
+function washLabel(minutes: number) {
+  return minutes >= 60 ? `洗${(minutes / 60).toFixed(1)}小时` : `洗${minutes}分`;
+}
+
+type ReboundStatus = '已回封' | '临封' | '修复' | '异动';
+const STATUS_ORDER: Record<ReboundStatus, number> = { 已回封: 0, 临封: 1, 修复: 2, 异动: 3 };
+const STATUS_COLORS: Record<ReboundStatus, string> = {
+  已回封: 'bg-rose-500',
+  临封: 'bg-orange-500',
+  修复: 'bg-amber-500',
+  异动: 'bg-slate-400',
+};
+const STATUS_CHIP_BG: Record<ReboundStatus, string> = {
+  已回封: 'bg-rose-500/10',
+  临封: 'bg-orange-500/10',
+  修复: '',
+  异动: '',
+};
+
+function eastmoneyStockId(code: string): string | null {
+  const normalized = (code || '').trim().toUpperCase().replace(/\.(SZ|SS|SH|BJ)$/, '');
+  if (!/^\d{6}$/.test(normalized)) return null;
+  if (/^(6|5|9)/.test(normalized)) return `${normalized}1`;
+  if (/^(0|2|3)/.test(normalized)) return `${normalized}2`;
+  if (/^(4|8)/.test(normalized)) return `${normalized}0`;
+  return null;
+}
+
+function eastmoneyPictureUrl(code: string, imageType: 'KXL' | 'r'): string | null {
+  const id = eastmoneyStockId(code);
+  if (!id) return null;
+  const base =
+    imageType === 'KXL'
+      ? 'https://webquoteklinepic.eastmoney.com/GetPic.aspx'
+      : 'https://webquotepic.eastmoney.com/GetPic.aspx';
+  const params = new URLSearchParams({
+    id,
+    formula: 'MACD',
+    imageType,
+    token: EASTMONEY_PICTURE_TOKEN,
+    rt: EASTMONEY_PICTURE_RT,
+  });
+  return `${base}?${params.toString()}`;
+}
+
+function MarketStockPreviewTooltip({
+  code,
+  name,
+  summary,
+  children,
+}: {
+  code: string;
+  name: string;
+  summary?: string;
+  children: React.ReactElement;
+}) {
+  const dailyUrl = eastmoneyPictureUrl(code, 'KXL');
+  const intradayUrl = eastmoneyPictureUrl(code, 'r');
+
+  if (!dailyUrl || !intradayUrl) return children;
+
+  return (
+    <TooltipProvider delayDuration={160}>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent
+          side="top"
+          align="start"
+          sideOffset={10}
+          className="w-[720px] rounded-2xl border border-slate-200/75 bg-white/96 p-3 text-slate-700 shadow-[0_18px_36px_rgba(15,23,42,0.16)] backdrop-blur-sm dark:border-slate-800 dark:bg-slate-950/92 dark:text-slate-200"
+        >
+          {summary ? (
+            <div className="mb-2 whitespace-pre-wrap text-[11px] leading-5 text-slate-600 dark:text-slate-300">
+              {summary}
+            </div>
+          ) : null}
+          <div className="grid grid-cols-2 gap-2">
+            <div className="flex items-center justify-center rounded-xl border border-slate-200/70 bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
+              <img
+                src={dailyUrl}
+                alt={`${name} 日K预览`}
+                className="h-[220px] w-full object-contain"
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+            <div className="flex items-center justify-center rounded-xl border border-slate-200/70 bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
+              <img
+                src={intradayUrl}
+                alt={`${name} 分时预览`}
+                className="h-[220px] w-full object-contain"
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+/** 反包候选的当前状态：已回封看封单/时间，未回封按盘中涨幅分级 */
+function reboundStatus(pick: ReboundPick): ReboundStatus {
+  if (pick.sealTime != null) return '已回封';
+  const change = pick.change;
+  const { nearSealPct, repairPct } = getStrategy().rebound;
+  if (change != null && change >= nearSealPct) return '临封';
+  if (change != null && change >= repairPct) return '修复';
+  return '异动';
 }
 
 function canAccessRelay(points?: number | null) {
@@ -161,7 +271,7 @@ function RelayLockedPanel({ points = 0 }: { points?: number }) {
       <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-orange-500/10 text-orange-600 dark:text-orange-300">
         <Lock className="h-5 w-5" />
       </div>
-      <div className="mt-3 text-sm font-semibold text-foreground">龙头接力 / 断板反包</div>
+      <div className="mt-3 text-sm font-semibold text-foreground">龙头接力 / 异动反包</div>
       <div className="mt-2 text-sm text-muted-foreground">
         该卡片仅对积分大于等于 {RELAY_UNLOCK_POINTS} 的用户开放。
       </div>
@@ -180,10 +290,22 @@ function RelayCyclePanel({
   onSelectStock: (code: string, name: string) => void;
 }) {
   const { reboundStats } = relay;
-  const reboundRate = reboundStats.total > 0 ? Math.round((reboundStats.continued / reboundStats.total) * 100) : null;
-  const oneDayGapRate =
-    reboundStats.oneDayGapTotal > 0 ? Math.round((reboundStats.oneDayGapContinued / reboundStats.oneDayGapTotal) * 100) : null;
   const afterClose = isAfterMarketClose();
+  // 确认组与观察池合并为一张候选池：状态就地标记（已回封/临封/修复/异动），升格不挪窝
+  const reboundPicks = [...relay.reboundConfirmed, ...relay.reboundWatching].sort(
+    (a, b) => STATUS_ORDER[reboundStatus(a)] - STATUS_ORDER[reboundStatus(b)] || b.score - a.score
+  );
+  const statusCounts = new Map<ReboundStatus, number>();
+  reboundPicks.forEach((pick) => {
+    const status = reboundStatus(pick);
+    statusCounts.set(status, (statusCounts.get(status) || 0) + 1);
+  });
+  const STATUS_SUMMARY: Array<[ReboundStatus, number]> = [
+    ['已回封', statusCounts.get('已回封') || 0],
+    ['临封', statusCounts.get('临封') || 0],
+    ['修复', statusCounts.get('修复') || 0],
+    ['异动', statusCounts.get('异动') || 0],
+  ];
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -199,15 +321,16 @@ function RelayCyclePanel({
             <span className="flex flex-wrap items-center gap-1">
               <span>存活</span>
               {relay.aliveLeaders.map((leader) => (
-                <button
-                  key={leader.code}
-                  type="button"
-                  onClick={() => onSelectStock(leader.code, leader.name)}
-                  className="rounded px-1.5 py-0.5 font-medium text-orange-600 hover:bg-muted/60 dark:text-orange-300"
-                >
-                  {leader.name}
-                  <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(leader.height)}</span>
-                </button>
+                <MarketStockPreviewTooltip key={leader.code} code={leader.code} name={leader.name}>
+                  <button
+                    type="button"
+                    onClick={() => onSelectStock(leader.code, leader.name)}
+                    className="rounded px-1.5 py-0.5 font-medium text-orange-600 hover:bg-muted/60 dark:text-orange-300"
+                  >
+                    {leader.name}
+                    <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(leader.height)}</span>
+                  </button>
+                </MarketStockPreviewTooltip>
               ))}
             </span>
           ) : null}
@@ -221,32 +344,34 @@ function RelayCyclePanel({
                 <div key={link.date} className="flex flex-wrap items-center gap-1.5 text-xs">
                   <span className="tabular-nums text-muted-foreground">{link.date.slice(5)}</span>
                   {link.leaders.map((leader) => (
-                    <button
-                      key={leader.code}
-                      type="button"
-                      onClick={() => onSelectStock(leader.code, leader.name)}
-                      className="rounded px-1 py-0.5 text-emerald-700 hover:bg-muted/60 dark:text-emerald-300"
-                    >
-                      {leader.name}
-                      <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(leader.height)}断</span>
-                    </button>
+                    <MarketStockPreviewTooltip key={leader.code} code={leader.code} name={leader.name}>
+                      <button
+                        type="button"
+                        onClick={() => onSelectStock(leader.code, leader.name)}
+                        className="rounded px-1 py-0.5 text-emerald-700 hover:bg-muted/60 dark:text-emerald-300"
+                      >
+                        {leader.name}
+                        <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(leader.height)}断</span>
+                      </button>
+                    </MarketStockPreviewTooltip>
                   ))}
                   <span className="text-muted-foreground">→</span>
                   {link.successors.length === 0 ? (
                     <span className="text-muted-foreground">无接力</span>
                   ) : (
                     link.successors.map((successor) => (
-                      <button
-                        key={successor.code}
-                        type="button"
-                        onClick={() => onSelectStock(successor.code, successor.name)}
-                        className={`rounded px-1 py-0.5 hover:bg-muted/60 ${
-                          successor.becameLeader ? 'text-orange-600 dark:text-orange-300' : 'text-foreground'
-                        }`}
-                      >
-                        {successor.name}
-                        <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(successor.maxHeight)}</span>
-                      </button>
+                      <MarketStockPreviewTooltip key={successor.code} code={successor.code} name={successor.name}>
+                        <button
+                          type="button"
+                          onClick={() => onSelectStock(successor.code, successor.name)}
+                          className={`rounded px-1 py-0.5 hover:bg-muted/60 ${
+                            successor.becameLeader ? 'text-orange-600 dark:text-orange-300' : 'text-foreground'
+                          }`}
+                        >
+                          {successor.name}
+                          <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(successor.maxHeight)}</span>
+                        </button>
+                      </MarketStockPreviewTooltip>
                     ))
                   )}
                 </div>
@@ -260,40 +385,42 @@ function RelayCyclePanel({
             <div className="flex flex-wrap items-center gap-1.5 text-xs">
               <span className="text-muted-foreground">{afterClose ? '今日断板' : '今日未封板'}</span>
               {relay.breaksToday.map((leader) => (
-                <button
-                  key={leader.code}
-                  type="button"
-                  onClick={() => onSelectStock(leader.code, leader.name)}
-                  className="rounded px-1.5 py-0.5 font-medium text-emerald-700 hover:bg-muted/60 dark:text-emerald-300"
-                >
-                  {leader.name}
-                  <span className="ml-0.5 text-[10px] text-muted-foreground">
-                    {boardHeightLabel(leader.height)}
-                    {leader.status === 'zb' ? '炸板' : afterClose ? '断' : ''}
-                  </span>
-                </button>
+                <MarketStockPreviewTooltip key={leader.code} code={leader.code} name={leader.name}>
+                  <button
+                    type="button"
+                    onClick={() => onSelectStock(leader.code, leader.name)}
+                    className="rounded px-1.5 py-0.5 font-medium text-emerald-700 hover:bg-muted/60 dark:text-emerald-300"
+                  >
+                    {leader.name}
+                    <span className="ml-0.5 text-[10px] text-muted-foreground">
+                      {boardHeightLabel(leader.height)}
+                      {leader.status === 'zb' ? '炸板' : afterClose ? '断' : ''}
+                    </span>
+                  </button>
+                </MarketStockPreviewTooltip>
               ))}
             </div>
             {relay.watchlist.length > 0 ? (
               <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
                 <span className="text-muted-foreground">首板候选</span>
                 {relay.watchlist.map((candidate) => (
-                  <button
-                    key={candidate.code}
-                    type="button"
-                    onClick={() => onSelectStock(candidate.code, candidate.name)}
-                    className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted/60 ${
-                      candidate.sameTheme ? 'bg-orange-500/10 text-orange-700 dark:text-orange-300' : 'text-foreground'
-                    }`}
-                  >
-                    <span className="font-medium">{candidate.name}</span>
-                    <span className="tabular-nums text-[10px] text-muted-foreground">{candidate.score}分</span>
-                    {candidate.reasons.slice(0, 2).map((reason) => (
-                      <span key={reason} className="rounded bg-muted/60 px-1 text-[10px] text-muted-foreground">
-                        {reason}
-                      </span>
-                    ))}
-                  </button>
+                  <MarketStockPreviewTooltip key={candidate.code} code={candidate.code} name={candidate.name}>
+                    <button
+                      type="button"
+                      onClick={() => onSelectStock(candidate.code, candidate.name)}
+                      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted/60 ${
+                        candidate.sameTheme ? 'bg-orange-500/10 text-orange-700 dark:text-orange-300' : 'text-foreground'
+                      }`}
+                    >
+                      <span className="font-medium">{candidate.name}</span>
+                      <span className="tabular-nums text-[10px] text-muted-foreground">{candidate.score}分</span>
+                      {candidate.reasons.slice(0, 2).map((reason) => (
+                        <span key={reason} className="rounded bg-muted/60 px-1 text-[10px] text-muted-foreground">
+                          {reason}
+                        </span>
+                      ))}
+                    </button>
+                  </MarketStockPreviewTooltip>
                 ))}
               </div>
             ) : null}
@@ -304,108 +431,88 @@ function RelayCyclePanel({
       </div>
 
       <div className="rounded-[24px] border border-border/70 bg-background/70 p-5">
-        <div className="text-sm font-semibold text-foreground">断板反包</div>
+        <div className="text-sm font-semibold text-foreground">异动反包</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          前连板股（≥2板）断板后回封。历史继续率低，慎追；重点用作周期信号。
+          范围=当日异动池∪炸板池；覆盖 连板反包 / 首板反包 / 炸板回封 三类形态，按参与价值分级。
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <span className="tabular-nums">
-            近{relay.days - 1}日反包 {reboundStats.total} 次
-            {reboundRate !== null ? ` · 次日继续 ${reboundStats.continued} 次（${reboundRate}%）` : ''}
-          </span>
-          {oneDayGapRate !== null ? (
-            <span className="tabular-nums">
-              断1日 {reboundStats.oneDayGapContinued}/{reboundStats.oneDayGapTotal}（{oneDayGapRate}%）
-            </span>
-          ) : null}
+          {(
+            [
+              ['连板反包', reboundStats.rebreak],
+              ['首板反包', reboundStats.firstBoard],
+              ['炸板回封', reboundStats.reseal],
+            ] as const
+          ).map(([label, stats]) =>
+            stats.total > 0 ? (
+              <span key={label} className="tabular-nums">
+                {label} {stats.continued}/{stats.total}（{Math.round((stats.continued / stats.total) * 100)}%）
+              </span>
+            ) : null
+          )}
         </div>
 
-        {relay.rebounds.length >= 3 ? (
+        {relay.reboundConfirmed.length >= 3 ? (
           <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-            反包集中出现（{relay.rebounds.length}只）：多为退潮修复期信号，谨防次日集体分歧。
+            反包集中出现（{relay.reboundConfirmed.length}只）：多为退潮修复期信号，谨防次日集体分歧。
           </div>
         ) : null}
 
-        {relay.reboundWatch.length > 0 ? (
+        {relay.reboundConfirmed.length + relay.reboundWatching.length > 0 ? (
           <div className="mt-4">
             <div className="text-xs font-medium text-muted-foreground">
-              观察池（断板未回封 {relay.reboundWatch.length}只，按盘中涨幅排序，≥7% 临封关注）
+              反包候选池 {relay.reboundConfirmed.length + relay.reboundWatching.length}只
+              <span className="ml-2 font-normal text-muted-foreground">
+                {STATUS_SUMMARY.map(([label, count], index) =>
+                  count > 0 ? (
+                    <span key={label} className="tabular-nums inline-flex items-center gap-1">
+                      {index > 0 ? <span className="opacity-50">·</span> : ''}
+                      <span className={`inline-block h-1.5 w-1.5 rounded-full ${STATUS_COLORS[label]}`} />
+                      {label} {count}
+                    </span>
+                  ) : null
+                )}
+              </span>
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {[...relay.reboundWatch]
-                .sort((a, b) => (b.change ?? -100) - (a.change ?? -100))
-                .map((stock) => {
-                  const nearSeal = (stock.change ?? 0) >= 7;
-                  return (
+              {reboundPicks.map((stock) => {
+                const status = reboundStatus(stock);
+                const change = stock.change;
+                return (
+                  <MarketStockPreviewTooltip
+                    key={stock.code}
+                    code={stock.code}
+                    name={stock.name}
+                    summary={stock.analysis || stock.reasons.join(' · ') || undefined}
+                  >
                     <button
-                      key={stock.code}
                       type="button"
                       onClick={() => onSelectStock(stock.code, stock.name)}
-                      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:bg-muted/60 ${
-                        nearSeal ? 'bg-orange-500/10 text-orange-700 dark:text-orange-300' : 'text-foreground'
-                      }`}
+                      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:bg-muted/60 ${STATUS_CHIP_BG[status]}`}
                     >
-                      <span className="font-medium">{stock.name}</span>
+                      <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_COLORS[status]}`} />
+                      <span className="font-medium text-foreground">{stock.name}</span>
                       <span className="text-[10px] text-muted-foreground">
-                        前{boardHeightLabel(stock.prevHeight)}·断{stock.gapDays}日
+                        {stock.pattern}·前{boardHeightLabel(stock.prevHeight)}·断{stock.gapDays}日
                         {stock.brokeToday ? '·炸' : ''}
                         {stock.wasLeader ? '·前龙头' : ''}
+                        {stock.inMainline ? '·主线' : ''}
                       </span>
-                      <span
-                        className={`tabular-nums text-[10px] ${
-                          stock.change === null
-                            ? 'text-muted-foreground'
-                            : stock.change > 0
-                              ? 'text-orange-600 dark:text-orange-300'
-                              : 'text-emerald-600 dark:text-emerald-300'
-                        }`}
-                      >
-                        {stock.change === null ? '--' : `${stock.change >= 0 ? '+' : ''}${stock.change.toFixed(2)}%`}
+                      <span className="tabular-nums text-[10px] text-muted-foreground">
+                        {status === '已回封'
+                          ? `${stock.sealTime}·${stock.fund != null && stock.fund > 0 ? `${stock.fund.toFixed(1)}亿` : '--'}`
+                          : change == null
+                            ? '--'
+                            : `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`}
+                        {stock.washMinutes != null ? `·${washLabel(stock.washMinutes)}` : ''}
                       </span>
                     </button>
-                  );
-                })}
-            </div>
-          </div>
-        ) : null}
-
-        {relay.rebounds.length > 0 ? (
-          <div className="mt-4">
-            <div className="mb-1 text-xs font-medium text-muted-foreground">已回封（确认入列）</div>
-            <div className="divide-y divide-border/50">
-            {relay.rebounds.map((stock) => (
-              <button
-                key={stock.code}
-                type="button"
-                onClick={() => onSelectStock(stock.code, stock.name)}
-                className="flex w-full items-center justify-between gap-3 py-2 text-left text-xs hover:bg-muted/40"
-              >
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span className="font-medium text-foreground">{stock.name}</span>
-                  <span className="shrink-0 text-muted-foreground">
-                    前{boardHeightLabel(stock.prevHeight)}·断{stock.gapDays}日
-                  </span>
-                  {stock.wasLeader ? (
-                    <span className="shrink-0 rounded bg-orange-500/10 px-1 text-[10px] text-orange-600 dark:text-orange-300">
-                      前龙头
-                    </span>
-                  ) : null}
-                </span>
-                <span className="flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground">
-                  <span className="tabular-nums">{stock.sealTime}</span>
-                  <span className="tabular-nums">{stock.fund > 0 ? `${stock.fund.toFixed(1)}亿` : '--'}</span>
-                  <span className="tabular-nums">{stock.price > 0 ? `${stock.price.toFixed(2)}元` : '--'}</span>
-                </span>
-              </button>
-            ))}
+                  </MarketStockPreviewTooltip>
+                );
+              })}
             </div>
           </div>
         ) : (
-          <div className="mt-4 text-xs text-muted-foreground">
-            {relay.reboundWatch.length > 0
-              ? '今日尚无回封——观察池中的异动股回封后转入此名单。'
-              : '今日无反包候选。反包多集中出现在晋级率低谷（退潮修复期），个股机会需同题材与早封配合。'}
-          </div>
+          <div className="mt-4 text-xs text-muted-foreground">异动池内暂无断板/炸板候选。</div>
         )}
       </div>
     </div>
@@ -497,7 +604,7 @@ export default function Home() {
     };
   }, [getMarketSessionKey]);
 
-  const refreshMarket = useCallback(async (labels: MarketCardLabel[] = MARKET_CARD_LABELS, force = true) => {
+  const refreshMarket = useCallback(async (labels: MarketCardLabel[] = MARKET_CARD_LABELS) => {
     setCardRefreshing((current) => {
       const next = { ...current };
       labels.forEach((label) => {
@@ -509,7 +616,7 @@ export default function Home() {
       const results = await Promise.all(
         labels.map(async (label) => {
           if (label === '趋势') {
-            const trend = await loadTrendSnapshot(force);
+            const trend = await loadTrendSnapshot();
             return {
               label,
               apply: (current: MarketSnapshot): MarketSnapshot => ({
@@ -525,7 +632,7 @@ export default function Home() {
           }
           if (label === '情绪') {
             const desiredEmotionDays = activeMarketCard === '情绪' ? shortEmotionCycle : 5;
-            const emotion = await loadEmotionSnapshot(desiredEmotionDays, force);
+            const emotion = await loadEmotionSnapshot(desiredEmotionDays);
             return {
               label,
               apply: (current: MarketSnapshot): MarketSnapshot => ({
@@ -541,7 +648,7 @@ export default function Home() {
             };
           }
           if (label === '主线') {
-            const mainline = await loadMainlineSnapshot(force);
+            const mainline = await loadMainlineSnapshot();
             return {
               label,
               apply: (current: MarketSnapshot): MarketSnapshot => ({
@@ -555,7 +662,7 @@ export default function Home() {
               }),
             };
           }
-          const payoff = await loadPayoffSnapshot(force);
+          const payoff = await loadPayoffSnapshot();
           return {
             label,
             apply: (current: MarketSnapshot): MarketSnapshot => ({
@@ -604,7 +711,7 @@ export default function Home() {
     let active = true;
     setMarketLoading(true);
     setLoadedMarketCards({ ...EMPTY_CARD_DETAILS });
-    loadMarketSummarySnapshot(false)
+    loadMarketSummarySnapshot()
       .then((snapshot) => {
         if (!active) return;
         setMarketSnapshot(snapshot);
@@ -630,7 +737,7 @@ export default function Home() {
     if (loadedMarketCards[activeMarketCard]) {
       return;
     }
-    void refreshMarket([activeMarketCard], false);
+    void refreshMarket([activeMarketCard]);
   }, [activeMarketCard, isAuthenticated, loadedMarketCards, refreshMarket, viewMode]);
 
   useEffect(() => {
@@ -646,7 +753,7 @@ export default function Home() {
       if (isTradingTime()) {
         const current = marketPageLoadMetaRef.current;
         if (!current || Date.now() - current.lastSyncedAt >= 30_000) {
-          refreshMarket(enabled, false);
+          refreshMarket(enabled);
         }
       }
     }, 30000);
@@ -1293,6 +1400,16 @@ export default function Home() {
                               </span>
                             ) : null}
                           </div>
+                          {lane.catalyst || (lane.persistDays ?? 0) > 0 ? (
+                            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                              {(lane.persistDays ?? 0) > 0 ? (
+                                <span className="tabular-nums">近5日活跃 {lane.persistDays} 天</span>
+                              ) : null}
+                              {lane.catalyst ? (
+                                <span className="text-orange-600 dark:text-orange-300">催化 · {lane.catalyst}</span>
+                              ) : null}
+                            </div>
+                          ) : null}
                           <div className="mt-5 text-xs text-muted-foreground">龙头股</div>
                           {leader ? (
                             <button

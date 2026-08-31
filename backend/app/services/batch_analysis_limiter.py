@@ -1,32 +1,20 @@
 from __future__ import annotations
 
 from typing import Optional
-from urllib.parse import urlparse
-
-from redis import asyncio as redis_asyncio
 
 from app.core.config import settings
+from app.services.redis_service import get_async_redis_client
 
 
 class BatchAnalysisLimiter:
     RUNNING_TTL_SECONDS = settings.CELERY_TASK_TIME_LIMIT + 60
     COOLDOWN_SECONDS = 300
-    _client: Optional[redis_asyncio.Redis] = None
+    _client = None
 
     @classmethod
-    def _get_redis_url(cls) -> str:
-        parsed = urlparse(settings.CELERY_BROKER_URL)
-        if parsed.scheme.startswith("redis"):
-            return settings.CELERY_BROKER_URL
-        return settings.CELERY_RESULT_BACKEND
-
-    @classmethod
-    def _get_client(cls) -> redis_asyncio.Redis:
+    def _get_client(cls):
         if cls._client is None:
-            cls._client = redis_asyncio.from_url(
-                cls._get_redis_url(),
-                decode_responses=True,
-            )
+            cls._client = get_async_redis_client()
         return cls._client
 
     @classmethod

@@ -38,13 +38,6 @@ interface SpeechRecognitionErrorEvent extends Event {
 interface Window {
   SpeechRecognition?: new () => SpeechRecognition;
   webkitSpeechRecognition?: new () => SpeechRecognition;
-  foxAgentCrossRequest?: (options: {
-    url: string;
-    method?: string;
-    headers?: Record<string, string>;
-    success?: (body: unknown, headers?: unknown, extra?: unknown) => void;
-    error?: (error: unknown) => void;
-  }) => void;
 }
 
 // 声明模块

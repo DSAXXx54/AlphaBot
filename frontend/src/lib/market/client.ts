@@ -1,4 +1,4 @@
-import { indexedDBCache } from '@/lib/indexedDBCache';
+import { indexedDBCache } from '../indexedDBCache';
 
 const inflight = new Map<string, Promise<unknown>>();
 const memory = new Map<string, { at: number; ttl: number; data: unknown }>();
@@ -43,30 +43,14 @@ async function writePersisted(key: string, ttl: number, data: unknown) {
   }
 }
 
-async function deletePersisted(key: string) {
-  if (typeof window === 'undefined') return;
-  try {
-    await indexedDBCache.delete(persistKey(key));
-  } catch {
-    // ignore delete failures
-  }
-}
-
 export async function cached<T>(
   key: string,
   ttl: number,
   persist: boolean,
-  loader: () => Promise<T>,
-  options?: { force?: boolean }
+  loader: () => Promise<T>
 ): Promise<T> {
-  const force = options?.force === true;
-  if (force) {
-    memory.delete(key);
-    inflight.delete(key);
-    if (persist) await deletePersisted(key);
-  }
   const hit = memory.get(key);
-  if (!force && hit && Date.now() - hit.at < hit.ttl) {
+  if (hit && Date.now() - hit.at < hit.ttl) {
     return hit.data as T;
   }
   if (persist) {
@@ -77,7 +61,7 @@ export async function cached<T>(
     }
   }
   const pending = inflight.get(key);
-  if (!force && pending) {
+  if (pending) {
     return pending as Promise<T>;
   }
 
@@ -95,105 +79,6 @@ export async function cached<T>(
   return request;
 }
 
-function withCallback(url: string, name: string): string {
-  if (/[?&]cb=/.test(url)) return url.replace(/([?&]cb=)[^&]*/, `$1${name}`);
-  if (/[?&]callback=/.test(url)) return url.replace(/([?&]callback=)[^&]*/, `$1${name}`);
-  return `${url}${url.includes('?') ? '&' : '?'}cb=${name}`;
-}
-
-function parseJsonOrJsonp<T>(payload: unknown): T {
-  if (payload instanceof ArrayBuffer) {
-    const text = new TextDecoder('utf-8').decode(new Uint8Array(payload));
-    return parseJsonOrJsonp<T>(text);
-  }
-  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(payload)) {
-    const view = payload as ArrayBufferView;
-    const text = new TextDecoder('utf-8').decode(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
-    return parseJsonOrJsonp<T>(text);
-  }
-  if (payload && typeof payload === 'object') return payload as T;
-  const text = typeof payload === 'string' ? payload : String(payload ?? '');
-  const trimmed = text.trim();
-  if (!trimmed) {
-    throw new Error('empty payload');
-  }
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    return JSON.parse(trimmed) as T;
-  }
-  const left = trimmed.indexOf('(');
-  const right = trimmed.lastIndexOf(')');
-  if (left === -1 || right === -1 || right <= left) {
-    throw new Error('invalid jsonp payload');
-  }
-  return JSON.parse(trimmed.slice(left + 1, right)) as T;
-}
-
-function stripJsonpCallback(url: string): string {
-  return url
-    .replace(/([?&])cb=[^&]*/g, '$1')
-    .replace(/([?&])callback=[^&]*/g, '$1')
-    .replace(/[?&]$/, '')
-    .replace(/\?&/, '?');
-}
-
-async function foxRequestJson<T>(url: string, context?: { key?: string; requestUrl?: string }): Promise<T> {
-  if (typeof window === 'undefined' || typeof window.foxAgentCrossRequest !== 'function') {
-    throw new Error('foxAgentCrossRequest unavailable');
-  }
-  const requestUrl = context?.requestUrl || url;
-  const payload = await new Promise<unknown>((resolve, reject) => {
-    window.foxAgentCrossRequest?.({
-      url: stripJsonpCallback(url),
-      method: 'GET',
-      success(body) {
-        resolve(body);
-      },
-      error(error) {
-        console.warn('[market] foxAgentCrossRequest error', {
-          key: context?.key,
-          url: requestUrl,
-          foxUrl: url,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        reject(error instanceof Error ? error : new Error(typeof error === 'string' ? error : JSON.stringify(error)));
-      },
-    });
-  });
-  return parseJsonOrJsonp<T>(payload);
-}
-
-export function jsonp<T>(url: string, timeout = 12000): Promise<T> {
-  return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined') {
-      reject(new Error('jsonp requires browser'));
-      return;
-    }
-    const cbName = `__em_${Math.random().toString(36).slice(2, 10)}`;
-    const script = document.createElement('script');
-    const timer = window.setTimeout(() => {
-      cleanup();
-      reject(new Error(`jsonp timeout: ${url}`));
-    }, timeout);
-
-    const cleanup = () => {
-      window.clearTimeout(timer);
-      delete (window as unknown as Record<string, unknown>)[cbName];
-      script.remove();
-    };
-
-    (window as unknown as Record<string, (data: T) => void>)[cbName] = (data: T) => {
-      cleanup();
-      resolve(data);
-    };
-    script.src = withCallback(url, cbName);
-    script.onerror = () => {
-      cleanup();
-      reject(new Error(`jsonp script load error: ${url}`));
-    };
-    document.head.appendChild(script);
-  });
-}
-
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, {
     cache: 'no-cache',
@@ -203,69 +88,8 @@ async function fetchJson<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-function isEastmoney(url: string) {
-  return /eastmoney\.com/i.test(url);
-}
-
-function requestWithFallback<T>(url: string): Promise<T> {
-  return fetchJson<T>(url).catch(() => jsonp<T>(url));
-}
-
-function hasFoxAgentCrossRequest() {
-  return typeof window !== 'undefined' && typeof window.foxAgentCrossRequest === 'function';
-}
-
-export function marketEastmoneyGet<T>(
-  url: string,
-  ttl = TTL.seconds(30),
-  persist = false,
-  key: string,
-  options?: { force?: boolean; foxUrl?: string }
-): Promise<T> {
-  if (hasFoxAgentCrossRequest()) {
-    return cached(key, ttl, persist, () => foxRequestJson<T>(options?.foxUrl || url, { key, requestUrl: url }), {
-      force: options?.force === true,
-    });
-  }
-  return cached(
-    key,
-    ttl,
-    persist,
-    async () => {
-      try {
-        return await jsonp<T>(url);
-      } catch {
-        return fetchJson<T>(url);
-      }
-    },
-    { force: options?.force === true }
-  );
-}
-
 export function marketGet<T>(url: string, ttl = TTL.seconds(30), persist = false, key: string): Promise<T> {
-  if (isEastmoney(url)) {
-    return marketEastmoneyGet<T>(url, ttl, persist, key);
-  }
-  return cached(key, ttl, persist, () => requestWithFallback<T>(url));
-}
-
-export function marketGetForce<T>(url: string, ttl = TTL.seconds(30), persist = false, key: string): Promise<T> {
-  if (isEastmoney(url)) {
-    return marketEastmoneyGet<T>(url, ttl, persist, key, { force: true });
-  }
-  return cached(key, ttl, persist, () => requestWithFallback<T>(url), { force: true });
-}
-
-export async function clearMarketCache(pattern = ''): Promise<void> {
-  for (const key of [...memory.keys()]) {
-    if (!pattern || key.includes(pattern)) {
-      memory.delete(key);
-      inflight.delete(key);
-    }
-  }
-  if (typeof window !== 'undefined') {
-    await indexedDBCache.clearPattern(`market:${pattern}`);
-  }
+  return cached(key, ttl, persist, () => fetchJson<T>(url));
 }
 
 export async function mapBatches<T, R>(items: T[], size: number, mapper: (item: T) => Promise<R>): Promise<R[]> {

@@ -2,12 +2,12 @@ import type { MarketTrendPanelData, MarketTrendStage, MarketTrendTopic, MarketTr
 import { stockConcepts, type PlateFlow, type SurgeLimitStock, type TopicStock } from './api';
 import { isoDate, matchPlate, normalizeCode, normalizePlateName } from './format';
 import { getTrendPlateWeight } from './plateFilter';
+import { percentileRank } from './flowStrength';
+import { getStrategy } from './strategy';
 import { dedupeCandidatePlates, type PlateGroup } from './plateDedup';
 
 const INFLOW_COLORS = ['#ff5a6f', '#5b8def', '#18b7d8', '#f59e0b', '#14b8a6'];
 const OUTFLOW_COLORS = ['#f7bfc5', '#c8d4f2', '#b9e8ee', '#f6d8ae', '#cfe9df'];
-const CANDIDATE_LIMIT = 20;
-const CANDIDATE_SLICE_PER_SIDE = 10;
 
 export const EMPTY_SECTOR_TREND: MarketTrendPanelData = {
   range: 20,
@@ -29,34 +29,28 @@ function plateSize(plate: PlateFlow): number {
   return plate.upCount + plate.downCount + plate.flatCount;
 }
 
-function percentileRank(values: number[], value: number): number {
-  if (values.length <= 1) return 100;
-  const ranked = [...values].sort((a, b) => b - a);
-  const index = ranked.findIndex((item) => item === value);
-  const rank = index === -1 ? ranked.length : index + 1;
-  return clampScore(((ranked.length - rank) / (ranked.length - 1)) * 100);
-}
-
 function candidateRpsScore(input: {
   changeRank: number;
   netFlowRank: number;
   flowIntensityRank: number;
   breadthRank: number;
-  amountRank: number;
+  ztRank: number;
 }): number {
+  const { rps } = getStrategy().trend;
   const priceScore = input.changeRank;
-  const flowScore = input.netFlowRank * 0.65 + input.flowIntensityRank * 0.35;
+  const flowScore = input.netFlowRank * rps.flowNetShare + input.flowIntensityRank * rps.flowIntensityShare;
   const breadthScore = input.breadthRank;
-  const activityScore = input.amountRank;
-  return clampScore(flowScore * 0.35 + breadthScore * 0.3 + priceScore * 0.2 + activityScore * 0.15);
+  const activityScore = input.ztRank;
+  return clampScore(flowScore * rps.flow + breadthScore * rps.breadth + priceScore * rps.price + activityScore * rps.activity);
 }
 
 function inferPhase(score: number): MarketTrendStage {
-  if (score >= 84) return '主升';
-  if (score >= 72) return '发酵';
-  if (score >= 58) return '分歧';
-  if (score >= 35) return '震荡';
-  if (score >= 20) return '退潮';
+  const [main, ferment, diverge, swing, ebb] = getStrategy().trend.phase;
+  if (score >= main) return '主升';
+  if (score >= ferment) return '发酵';
+  if (score >= diverge) return '分歧';
+  if (score >= swing) return '震荡';
+  if (score >= ebb) return '退潮';
   return '冷却';
 }
 
@@ -101,6 +95,7 @@ function highlightedStocksForGroup(members: PlateFlow[], ztList: TopicStock[]): 
 }
 
 function pickCandidatePlates(plates: PlateFlow[], ztList: TopicStock[], surge: SurgeLimitStock[]): PlateFlow[] {
+  const { candidateLimit, slicePerSide } = getStrategy().trend;
   const matched = new Map<string, PlateFlow>();
   const push = (plate?: PlateFlow) => {
     if (!plate?.code || matched.has(plate.code)) return;
@@ -114,14 +109,14 @@ function pickCandidatePlates(plates: PlateFlow[], ztList: TopicStock[], surge: S
   const weightedChange = (plate: PlateFlow) => plate.change * getTrendPlateWeight(plate.name);
 
   const byFlow = [...plates]
-    .sort((a, b) => weightedFlow(b) - weightedFlow(a) || b.amount - a.amount)
-    .slice(0, CANDIDATE_SLICE_PER_SIDE);
+    .sort((a, b) => weightedFlow(b) - weightedFlow(a) || b.ztCount - a.ztCount)
+    .slice(0, slicePerSide);
   const byChange = [...plates]
     .sort((a, b) => weightedChange(b) - weightedChange(a) || b.netFlow - a.netFlow)
-    .slice(0, CANDIDATE_SLICE_PER_SIDE);
+    .slice(0, slicePerSide);
 
   [...byFlow, ...byChange].forEach((plate) => push(plate));
-  return Array.from(matched.values()).slice(0, CANDIDATE_LIMIT);
+  return Array.from(matched.values()).slice(0, candidateLimit);
 }
 
 function toTopic(
@@ -132,8 +127,7 @@ function toTopic(
   date: string,
   ztList: TopicStock[],
   surge: SurgeLimitStock[],
-  score: number,
-  amountChange: number
+  score: number
 ): MarketTrendTopic {
   const plate = group.representative;
   const size = Math.max(plateSize(plate), 1);
@@ -148,11 +142,10 @@ function toTopic(
     date,
     score,
     changePct: plate.change,
-    turnover: plate.amount,
     moneyFlow: plate.netFlow,
     breadth,
+    ztCount,
     ztRatio,
-    amountChange: amountChange * 100,
     phase: inferPhase(score),
     highlightedStocks: highlightedStocksForGroup(group.members, ztList),
     relatedPlates: group.related.length > 0 ? group.related : undefined,
@@ -191,20 +184,17 @@ export function buildSectorTrendData(
   // 同题材归并：近义概念并成一组，只留代表板参与候选
   const groups = dedupeCandidatePlates(picked, (plate) => ztCountForPlate(plate, ztList, surge));
 
-  const meanAmount =
-    groups.reduce((sum, group) => sum + group.representative.amount, 0) / groups.length || 1;
   const date = isoDate(latestDay);
   const metrics = groups.map((group) => {
     const plate = group.representative;
     const size = Math.max(plateSize(plate), 1);
     const breadth = plate.upCount / size;
-    const amountChange = (plate.amount - meanAmount) / meanAmount;
-    const flowIntensity = plate.amount > 0 ? plate.netFlow / plate.amount : 0;
+    // 户均主力净流入：替代原"资金/成交额"集中度（xgb 无板块成交额）
+    const flowIntensity = plate.netFlow / size;
     return {
       group,
       plate,
       breadth,
-      amountChange,
       flowIntensity,
     };
   });
@@ -213,7 +203,7 @@ export function buildSectorTrendData(
   const netFlowValues = metrics.map((item) => item.plate.netFlow);
   const flowIntensityValues = metrics.map((item) => item.flowIntensity);
   const breadthValues = metrics.map((item) => item.breadth);
-  const amountValues = metrics.map((item) => item.plate.amount);
+  const ztCountValues = metrics.map((item) => item.plate.ztCount);
 
   const topics = metrics.map((item, index) => {
     const baseScore = candidateRpsScore({
@@ -221,7 +211,7 @@ export function buildSectorTrendData(
       netFlowRank: percentileRank(netFlowValues, item.plate.netFlow),
       flowIntensityRank: percentileRank(flowIntensityValues, item.flowIntensity),
       breadthRank: percentileRank(breadthValues, item.breadth),
-      amountRank: percentileRank(amountValues, item.plate.amount),
+      ztRank: percentileRank(ztCountValues, item.plate.ztCount),
     });
     const score = clampScore(baseScore * getTrendPlateWeight(item.plate.name));
 
@@ -233,8 +223,7 @@ export function buildSectorTrendData(
       date,
       ztList,
       surge,
-      score,
-      item.amountChange
+      score
     );
   });
 

@@ -1,25 +1,26 @@
 import {
-  buildXgbConceptIndex,
   loadBigFace,
   loadHot,
   loadIntradayEmotion,
-  loadPlateUniverse,
-  loadPlates,
   loadQuoteList,
   loadShortEmotion,
   loadStrong,
-  loadSurgeLimitUp,
   loadTopicPools,
   loadTradingDays,
+  loadTrendingPlates,
   loadTurnover,
-  loadXgbLimitUpPool,
   stockConcepts,
+  type PlateFlow,
   type TopicStock,
 } from './api';
-import { clearMarketCache } from './client';
+import { cached, TTL } from './client';
 import { buildRelaySnapshot } from './cycle';
-import { formatPlateFlow, formatShortDate, matchPlate, normalizeCode } from './format';
+import { fetchLatestMarketContext } from './domain';
+import { formatShortDate, isAfterMarketClose, normalizeCode, yyyymmdd } from './format';
+import { buildMainlineLanes } from './mainline';
+import { ensurePrivateStrategy, getStrategy, isPrivateLoaded } from './strategy';
 import { buildSectorTrendData } from './sectorTrend';
+import { indexedDBCache } from '../indexedDBCache';
 import {
   DEFAULT_MARKET_SNAPSHOT,
   type MarketBoardLevel,
@@ -27,15 +28,13 @@ import {
   type MarketGeeseRow,
   type MarketGeeseStock,
   type MarketMainlineLane,
-  type MarketMainlineStock,
   type MarketSnapshot,
+  type MarketTrendTopic,
 } from './types';
 
 export { DEFAULT_MARKET_SNAPSHOT } from './types';
 export type { MarketSnapshot } from './types';
 
-const MAINLINE_LIMIT = 3;
-const MAINLINE_FOLLOWERS = 8;
 const DEFAULT_EMOTION_DAYS = 5;
 const FULL_EMOTION_DAYS = 20;
 
@@ -75,11 +74,11 @@ type LatestMarketContext = {
   latestZt: TopicStock[];
   latestZb: TopicStock[];
   latestDt: TopicStock[];
-  surge: Awaited<ReturnType<typeof loadSurgeLimitUp>>;
+  surge: Awaited<ReturnType<typeof fetchLatestMarketContext>>['surge'];
   conceptIndex: Map<string, string[]>;
-  priorityNames: string[];
-  baseUniverse: Awaited<ReturnType<typeof loadPlateUniverse>>;
-  trendUniverse: Awaited<ReturnType<typeof loadPlateUniverse>>;
+  /** 全量板块宇宙（xgb 两笔请求覆盖，priorityNames 补拉机制已移除） */
+  baseUniverse: PlateFlow[];
+  trendUniverse: PlateFlow[];
 };
 
 function joinNames(names: Array<string | undefined>, limit = 2): string {
@@ -195,10 +194,6 @@ function emotionFromZt(date: string, ztList: TopicStock[], geeseRows: MarketGees
   };
 }
 
-function toMainlineStock(stock: TopicStock): MarketMainlineStock {
-  return { name: stock.name, code: stock.code, lbc: boardHeight(stock) };
-}
-
 function buildTopicFundMap(...groups: TopicStock[][]): Map<string, number> {
   const funds = new Map<string, number>();
   groups.flat().forEach((stock) => {
@@ -207,60 +202,6 @@ function buildTopicFundMap(...groups: TopicStock[][]): Map<string, number> {
     });
   });
   return funds;
-}
-
-function buildMainlineLanes(
-  plates: Awaited<ReturnType<typeof loadPlates>>,
-  ztPool: TopicStock[],
-  topicFunds: Map<string, number>
-): MarketMainlineLane[] {
-  const grouped = new Map<string, TopicStock[]>();
-  ztPool.forEach((stock) => {
-    stockConcepts(stock).forEach((name) => {
-      const rows = grouped.get(name) || [];
-      rows.push(stock);
-      grouped.set(name, rows);
-    });
-  });
-
-  return [...grouped.entries()]
-    .map(([name, stocks]) => {
-      const unique = new Map<string, TopicStock>();
-      stocks.forEach((stock) => {
-        const code = normalizeCode(stock.code) || stock.name;
-        if (!unique.has(code)) unique.set(code, stock);
-      });
-      const sorted = [...unique.values()].sort((a, b) => b.lbc - a.lbc || a.time - b.time);
-      const plate = matchPlate(plates, name);
-      const fallbackNetFlow = topicFunds.get(name) || 0;
-      const ztCount = sorted.length;
-      const maxHeight = sorted[0] ? boardHeight(sorted[0]) : 0;
-      const heightSum = sorted.reduce((sum, stock) => sum + boardHeight(stock), 0);
-      const netFlow = plate?.netFlow || fallbackNetFlow;
-      return {
-        name,
-        plate,
-        sorted,
-        netFlow,
-        ztCount,
-        maxHeight,
-        score: ztCount * 12 + maxHeight * 18 + heightSum * 4 + netFlow * 0.8,
-      };
-    })
-    .sort((a, b) => b.score - a.score || b.ztCount - a.ztCount || b.netFlow - a.netFlow)
-    .slice(0, MAINLINE_LIMIT)
-    .map((item) => ({
-      name: item.name,
-      value: item.netFlow !== 0 ? formatPlateFlow(item.netFlow) : '--',
-      change: item.plate?.change || 0,
-      netFlow: item.netFlow,
-      ztCount: item.ztCount,
-      maxHeight: item.maxHeight,
-      upCount: item.plate?.upCount || 0,
-      downCount: item.plate?.downCount || 0,
-      leader: item.sorted[0] ? toMainlineStock(item.sorted[0]) : null,
-      followers: item.sorted.slice(1, MAINLINE_FOLLOWERS + 1).map(toMainlineStock),
-    }));
 }
 
 let inflight: Promise<MarketSnapshot> | null = null;
@@ -302,28 +243,6 @@ function payoffFacts(payoffLists: MarketSnapshot['payoffLists']): string[] {
   ];
 }
 
-function priorityPlateNames(...groups: TopicStock[][]): string[] {
-  const seen = new Set<string>();
-  groups.flat().forEach((stock) => {
-    stockConcepts(stock).forEach((name) => {
-      if (seen.has(name)) return;
-      seen.add(name);
-    });
-  });
-  return Array.from(seen);
-}
-
-function appendPriorityNames(base: string[], extras: string[]): string[] {
-  const seen = new Set(base);
-  extras.forEach((name) => {
-    const value = name.trim();
-    if (!value || value === '其他' || seen.has(value)) return;
-    seen.add(value);
-    base.push(value);
-  });
-  return base;
-}
-
 function emptyPools(): TopicPoolsBundle {
   return {
     ztByDate: new Map<string, TopicStock[]>(),
@@ -332,29 +251,36 @@ function emptyPools(): TopicPoolsBundle {
   };
 }
 
-async function loadLatestMarketContext(force = false): Promise<LatestMarketContext> {
-  const tradingDays = await loadTradingDays(1, force);
-  const latestDay = tradingDays[tradingDays.length - 1] || '';
-  const [pools, surge, xgbLimitUp, baseUniverse] = await Promise.all([
-    latestDay ? loadTopicPools([latestDay], force) : Promise.resolve(emptyPools()),
-    loadSurgeLimitUp(force),
-    loadXgbLimitUpPool(force),
-    loadPlateUniverse({ force }),
-  ]);
-  const conceptIndex = buildXgbConceptIndex(xgbLimitUp);
-  const latestZt = latestDay
-    ? attachConcepts(pools.ztByDate.get(latestDay) || [], conceptIndex)
-    : [];
-  const latestZb = latestDay ? pools.zbByDate.get(latestDay) || [] : [];
-  const latestDt = latestDay ? pools.dtByDate.get(latestDay) || [] : [];
-  const priorityNames = appendPriorityNames(
-    priorityPlateNames(latestZt),
-    surge.flatMap((item) => item.plates)
+async function latestContextAnchor() {
+  const today = yyyymmdd();
+  const tradingDays = await loadTradingDays(1);
+  const anchor = tradingDays[tradingDays.length - 1] || today;
+  return {
+    anchor,
+    closed: anchor !== today || isAfterMarketClose(),
+  };
+}
+
+async function loadLatestMarketContext(): Promise<LatestMarketContext> {
+  const { anchor, closed } = await latestContextAnchor();
+  const payload = await cached<Awaited<ReturnType<typeof fetchLatestMarketContext>>>(
+    `market:context:latest:${anchor}`,
+    closed ? TTL.days(7) : TTL.seconds(20),
+    false,
+    async () => await fetchLatestMarketContext()
   );
-  const trendUniverse =
-    priorityNames.length === 0 || priorityNames.every((name) => matchPlate(baseUniverse, name))
-      ? baseUniverse
-      : await loadPlateUniverse({ priorityNames, force });
+  const latestDay = payload.latestDay || '';
+  const pools: TopicPoolsBundle = {
+    ztByDate: new Map(Object.entries(payload.pools?.ztByDate ?? {})),
+    zbByDate: new Map(Object.entries(payload.pools?.zbByDate ?? {})),
+    dtByDate: new Map(Object.entries(payload.pools?.dtByDate ?? {})),
+  };
+  const conceptIndex = new Map(
+    Object.entries(payload.conceptIndex ?? {}).map(([code, names]) => [normalizeCode(code), names])
+  );
+  const latestZt = attachConcepts(payload.latestZt ?? [], conceptIndex);
+  const latestZb = payload.latestZb ?? [];
+  const latestDt = payload.latestDt ?? [];
 
   return {
     latestDay,
@@ -362,23 +288,22 @@ async function loadLatestMarketContext(force = false): Promise<LatestMarketConte
     latestZt,
     latestZb,
     latestDt,
-    surge,
+    surge: payload.surge ?? [],
     conceptIndex,
-    priorityNames,
-    baseUniverse,
-    trendUniverse,
+    baseUniverse: payload.baseUniverse ?? [],
+    trendUniverse: payload.trendUniverse ?? payload.baseUniverse ?? [],
   };
 }
 
-async function buildEmotionSnapshot(limit: number, force = false): Promise<MarketEmotionSnapshot> {
+async function buildEmotionSnapshot(limit: number): Promise<MarketEmotionSnapshot> {
   const [tradingDays, intradayEmotion, shortEmotion] = await Promise.all([
-    loadTradingDays(FULL_EMOTION_DAYS, force),
-    loadIntradayEmotion(force),
-    loadShortEmotion(limit, force),
+    loadTradingDays(FULL_EMOTION_DAYS),
+    loadIntradayEmotion(),
+    loadShortEmotion(limit),
   ]);
   const pools =
     tradingDays.length > 0
-      ? await loadTopicPools(tradingDays, force)
+      ? await loadTopicPools(tradingDays)
       : {
           ztByDate: new Map<string, TopicStock[]>(),
           zbByDate: new Map<string, TopicStock[]>(),
@@ -403,14 +328,62 @@ async function buildEmotionSnapshot(limit: number, force = false): Promise<Marke
   };
 }
 
-export async function loadEmotionSnapshot(limit = FULL_EMOTION_DAYS, force = false): Promise<MarketEmotionSnapshot> {
-  return buildEmotionSnapshot(limit, force);
+export async function loadEmotionSnapshot(limit = FULL_EMOTION_DAYS): Promise<MarketEmotionSnapshot> {
+  return buildEmotionSnapshot(limit);
 }
 
-export async function loadTrendSnapshot(force = false): Promise<MarketTrendSnapshot> {
-  const [turnover, context] = await Promise.all([loadTurnover(force), loadLatestMarketContext(force)]);
+/** 候选名单每日留痕（IDB，30 天）：跌出候选 = 近几日在榜、今日不在榜，消除幸存者偏差 */
+type TrendCandidateSnapshot = { day: string; plates: Array<{ id: string; name: string }> };
+const TREND_DROP_DAYS = 5;
+function trendCandidateKey(day: string) {
+  return `market:trendCandidates:${day}`;
+}
+
+async function recordTrendCandidates(day: string, topics: MarketTrendTopic[]): Promise<void> {
+  if (typeof window === 'undefined' || !day || topics.length === 0) return;
+  try {
+    await indexedDBCache.set<TrendCandidateSnapshot>(
+      trendCandidateKey(day),
+      { day, plates: topics.map((topic) => ({ id: topic.id, name: topic.name })) },
+      TTL.days(30)
+    );
+  } catch {
+    // 留痕失败不影响主流程
+  }
+}
+
+async function loadDroppedCandidates(
+  day: string,
+  topics: MarketTrendTopic[],
+  priorDays: string[]
+): Promise<Array<{ name: string; lastSeen: string }>> {
+  if (typeof window === 'undefined' || !day) return [];
+  const currentIds = new Set(topics.map((topic) => topic.id));
+  const lastSeen = new Map<string, { name: string; lastSeen: string }>();
+  for (const prior of priorDays) {
+    try {
+      const snapshot = await indexedDBCache.get<TrendCandidateSnapshot>(trendCandidateKey(prior));
+      if (!snapshot) continue;
+      snapshot.plates.forEach((plate) => {
+        if (currentIds.has(plate.id)) return;
+        lastSeen.set(plate.id, { name: plate.name, lastSeen: formatShortDate(prior) });
+      });
+    } catch {
+      // 单日留痕读取失败跳过
+    }
+  }
+  return [...lastSeen.values()];
+}
+
+export async function loadTrendSnapshot(): Promise<MarketTrendSnapshot> {
+  await ensurePrivateStrategy();
+  const [turnover, context] = await Promise.all([loadTurnover(), loadLatestMarketContext()]);
   const eventAddedCount = context.trendUniverse.filter((plate) => !context.baseUniverse.some((base) => base.code === plate.code)).length;
   const trendData = buildSectorTrendData(context.latestDay, context.trendUniverse, context.latestZt, context.surge);
+  void recordTrendCandidates(context.latestDay, trendData.topics);
+  const tradingDays = await loadTradingDays(FULL_EMOTION_DAYS);
+  const priorDays = tradingDays.filter((day) => day !== context.latestDay).slice(-TREND_DROP_DAYS);
+  const droppedBoards = await loadDroppedCandidates(context.latestDay, trendData.topics, priorDays);
   return {
     turnover,
     sectorTrend: {
@@ -420,41 +393,57 @@ export async function loadTrendSnapshot(force = false): Promise<MarketTrendSnaps
         eventAddedCount,
         finalCount: trendData.topics.length,
       },
+      droppedBoards,
     },
     facts: trendFacts(turnover),
   };
 }
 
-export async function loadMainlineSnapshot(force = false): Promise<MarketMainlineSnapshot> {
+export async function loadMainlineSnapshot(): Promise<MarketMainlineSnapshot> {
+  // 主线/反包评分依赖 private 策略段（后端下发）；不可用时以空数据降级
+  await ensurePrivateStrategy();
+  if (!isPrivateLoaded()) {
+    return { mainlineLanes: [], relay: null, facts: DEFAULT_MARKET_SNAPSHOT.diagnostics.主线.facts };
+  }
   // 接力/反包需要多日池历史：与 context 的最新日池共享缓存，历史日 8h 持久缓存
-  const [context, relayDays] = await Promise.all([
-    loadLatestMarketContext(force),
-    loadTradingDays(FULL_EMOTION_DAYS, force),
+  const [context, relayDays, trending] = await Promise.all([
+    loadLatestMarketContext(),
+    loadTradingDays(FULL_EMOTION_DAYS),
+    loadTrendingPlates(),
   ]);
   const relayPools =
     relayDays.length > 0
-      ? await loadTopicPools(relayDays, force)
+      ? await loadTopicPools(relayDays)
       : {
           ztByDate: new Map<string, TopicStock[]>(),
           zbByDate: new Map<string, TopicStock[]>(),
           dtByDate: new Map<string, TopicStock[]>(),
         };
-  const relay = buildRelaySnapshot(relayDays, relayPools.ztByDate, relayPools.zbByDate);
-  // 潜在反包观察池挂一笔批量实时行情（20s TTL），盘中按涨幅排序预警
-  if (relay && relay.reboundWatch.length > 0) {
-    const quotes = await loadQuoteList(relay.reboundWatch.map((stock) => stock.code), force);
+  const mainlineLanes = buildMainlineLanes({
+    plates: context.trendUniverse,
+    ztPool: context.latestZt,
+    topicFunds: buildTopicFundMap(context.latestZt, context.latestZb, context.latestDt),
+    historyZtByDate: relayPools.ztByDate,
+    latestDay: context.latestDay,
+    trendingPlates: trending,
+  });
+  const relay = buildRelaySnapshot({
+    days: relayDays,
+    ztByDate: relayPools.ztByDate,
+    zbByDate: relayPools.zbByDate,
+    surge: context.surge,
+    mainlineThemes: new Set(mainlineLanes.map((lane) => lane.name)),
+  });
+  // 观察池挂一笔批量实时行情（20s TTL），用于临封/修复分级
+  if (relay && relay.reboundWatching.length > 0) {
+    const quotes = await loadQuoteList(relay.reboundWatching.map((stock) => stock.code));
     if (quotes.size > 0) {
-      relay.reboundWatch = relay.reboundWatch.map((stock) => {
+      relay.reboundWatching = relay.reboundWatching.map((stock) => {
         const quote = quotes.get(normalizeCode(stock.code));
         return quote ? { ...stock, change: quote.change, price: quote.price } : stock;
       });
     }
   }
-  const mainlineLanes = buildMainlineLanes(
-    context.trendUniverse,
-    context.latestZt,
-    buildTopicFundMap(context.latestZt, context.latestZb, context.latestDt)
-  );
   return {
     mainlineLanes,
     relay,
@@ -462,12 +451,12 @@ export async function loadMainlineSnapshot(force = false): Promise<MarketMainlin
   };
 }
 
-export async function loadPayoffSnapshot(force = false): Promise<MarketPayoffSnapshot> {
-  const tradingDays = await loadTradingDays(FULL_EMOTION_DAYS, force);
+export async function loadPayoffSnapshot(): Promise<MarketPayoffSnapshot> {
+  const tradingDays = await loadTradingDays(FULL_EMOTION_DAYS);
   const [strong, hot, bigface] = await Promise.all([
-    loadStrong(force),
-    loadHot(force),
-    loadBigFace(tradingDays, force),
+    loadStrong(),
+    loadHot(),
+    loadBigFace(tradingDays),
   ]);
   const payoffLists = { strong, hot, bigface };
   return {
@@ -476,16 +465,17 @@ export async function loadPayoffSnapshot(force = false): Promise<MarketPayoffSna
   };
 }
 
-export async function loadMarketSummarySnapshot(force = false): Promise<MarketSnapshot> {
+export async function loadMarketSummarySnapshot(): Promise<MarketSnapshot> {
   const snapshot: MarketSnapshot = JSON.parse(JSON.stringify(DEFAULT_MARKET_SNAPSHOT));
-  const tradingDays = await loadTradingDays(FULL_EMOTION_DAYS, force);
+  const tradingDays = await loadTradingDays(FULL_EMOTION_DAYS);
   const emotionDays = tradingDays.slice(-DEFAULT_EMOTION_DAYS);
-  const [turnoverResult, contextResult, strongResult, hotResult, bigFaceResult] = await Promise.allSettled([
-    loadTurnover(force),
-    loadLatestMarketContext(force),
-    loadStrong(force),
-    loadHot(force),
-    loadBigFace(tradingDays, force),
+  const [turnoverResult, contextResult, strongResult, hotResult, bigFaceResult, trendingResult] = await Promise.allSettled([
+    loadTurnover(),
+    loadLatestMarketContext(),
+    loadStrong(),
+    loadHot(),
+    loadBigFace(tradingDays),
+    loadTrendingPlates(),
   ]);
 
   const turnover = settledValue(turnoverResult, null);
@@ -495,6 +485,7 @@ export async function loadMarketSummarySnapshot(force = false): Promise<MarketSn
   }
 
   const context = settledValue(contextResult, null);
+  const strategyReady = await ensurePrivateStrategy();
   if (context) {
     const latestEmotion = emotionFromZt(
       context.latestDay,
@@ -503,11 +494,21 @@ export async function loadMarketSummarySnapshot(force = false): Promise<MarketSn
     );
     snapshot.diagnostics.情绪.facts = emotionFacts(latestEmotion ? [latestEmotion] : []);
 
-    const lanes = buildMainlineLanes(
-      context.trendUniverse,
-      context.latestZt,
-      buildTopicFundMap(context.latestZt, context.latestZb, context.latestDt)
-    );
+    // 持续性回看池：context 只带最新日，历史日单独拉（8h 持久缓存，增量成本低）
+    const histDays = tradingDays
+      .filter((day) => day !== context.latestDay)
+      .slice(-getStrategy().mainline.persistDays);
+    const histPools = histDays.length > 0 ? await loadTopicPools(histDays) : emptyPools();
+    const lanes = strategyReady
+      ? buildMainlineLanes({
+          plates: context.trendUniverse,
+          ztPool: context.latestZt,
+          topicFunds: buildTopicFundMap(context.latestZt, context.latestZb, context.latestDt),
+          historyZtByDate: histPools.ztByDate,
+          latestDay: context.latestDay,
+          trendingPlates: settledValue(trendingResult, []),
+        })
+      : [];
     snapshot.mainlineLanes = lanes;
     snapshot.diagnostics.主线.facts = mainlineFacts(lanes);
   }
@@ -524,11 +525,7 @@ export async function loadMarketSummarySnapshot(force = false): Promise<MarketSn
   return snapshot;
 }
 
-export async function loadMarketSnapshot(force = false): Promise<MarketSnapshot> {
-  if (force) {
-    await clearMarketCache();
-    return buildSnapshot();
-  }
+export async function loadMarketSnapshot(): Promise<MarketSnapshot> {
   if (inflight) return inflight;
   inflight = buildSnapshot().finally(() => {
     inflight = null;
@@ -541,25 +538,26 @@ async function buildSnapshot(): Promise<MarketSnapshot> {
   const tradingDays = await loadTradingDays(FULL_EMOTION_DAYS);
   const latestDay = tradingDays[tradingDays.length - 1] || '';
   const emotionDays = tradingDays.slice(-DEFAULT_EMOTION_DAYS);
+  const historyDays = latestDay ? tradingDays.filter((day) => day !== latestDay) : tradingDays;
 
-  const [turnoverResult, plateUniverseResult, poolResult, surgeResult, xgbLimitUpResult, strongResult, hotResult, bigFaceResult] = await Promise.allSettled([
+  const [turnoverResult, contextResult, historyPoolResult, strongResult, hotResult, bigFaceResult, trendingResult] = await Promise.allSettled([
     loadTurnover(),
-    loadPlateUniverse({ priorityNames: [] }),
-    tradingDays.length > 0
-      ? loadTopicPools(tradingDays)
+    loadLatestMarketContext(),
+    historyDays.length > 0
+      ? loadTopicPools(historyDays)
       : Promise.resolve({
           ztByDate: new Map<string, TopicStock[]>(),
           zbByDate: new Map<string, TopicStock[]>(),
           dtByDate: new Map<string, TopicStock[]>(),
         }),
-    loadSurgeLimitUp(),
-    loadXgbLimitUpPool(),
     loadStrong(),
     loadHot(),
     loadBigFace(tradingDays),
+    loadTrendingPlates(),
   ]);
 
   const turnover = settledValue(turnoverResult, null);
+  const strategyReady = await ensurePrivateStrategy();
   if (turnover) {
     snapshot.turnover = turnover;
     snapshot.diagnostics.趋势.facts = [
@@ -569,26 +567,25 @@ async function buildSnapshot(): Promise<MarketSnapshot> {
     ];
   }
 
-  const pools = settledValue(poolResult, {
+  const context = settledValue(contextResult, null);
+  const historyPools = settledValue(historyPoolResult, {
     ztByDate: new Map<string, TopicStock[]>(),
     zbByDate: new Map<string, TopicStock[]>(),
     dtByDate: new Map<string, TopicStock[]>(),
   });
-  const plateUniverse = settledValue(plateUniverseResult, []);
-  const conceptIndex = buildXgbConceptIndex(settledValue(xgbLimitUpResult, []));
-  const latestZt = attachConcepts(pools.ztByDate.get(latestDay) || [], conceptIndex);
-  const latestZb = pools.zbByDate.get(latestDay) || [];
-  const latestDt = pools.dtByDate.get(latestDay) || [];
-  const surge = settledValue(surgeResult, []);
-  const priorityNames = appendPriorityNames(
-    priorityPlateNames(latestZt),
-    surge.flatMap((item) => item.plates)
-  );
-  const plates = plateUniverse.length > 0 ? plateUniverse : await loadPlateUniverse({ priorityNames });
-  const trendUniverse =
-    priorityNames.length === 0 || priorityNames.every((name) => matchPlate(plates, name))
-      ? plates
-      : await loadPlateUniverse({ priorityNames });
+  const latestPools = context?.pools || emptyPools();
+  const pools: TopicPoolsBundle = {
+    ztByDate: new Map([...historyPools.ztByDate.entries(), ...latestPools.ztByDate.entries()]),
+    zbByDate: new Map([...historyPools.zbByDate.entries(), ...latestPools.zbByDate.entries()]),
+    dtByDate: new Map([...historyPools.dtByDate.entries(), ...latestPools.dtByDate.entries()]),
+  };
+  const plateUniverse = context?.baseUniverse || [];
+  const latestZt = context?.latestZt || [];
+  const latestZb = context?.latestZb || [];
+  const latestDt = context?.latestDt || [];
+  const surge = context?.surge || [];
+  const plates = context?.trendUniverse || plateUniverse;
+  const trendUniverse = plates;
 
   snapshot.emotionSeries = emotionDays
     .map((day, index) => {
@@ -600,11 +597,29 @@ async function buildSnapshot(): Promise<MarketSnapshot> {
     .filter((item): item is MarketEmotionPoint => item !== null);
   snapshot.diagnostics.情绪.facts = emotionFacts(snapshot.emotionSeries);
 
-  snapshot.relay = buildRelaySnapshot(tradingDays, pools.ztByDate, pools.zbByDate);
+  if (!strategyReady) {
+    snapshot.diagnostics.趋势.facts = trendFacts(turnover);
+    return snapshot;
+  }
 
-  const lanes = buildMainlineLanes(plates, latestZt, buildTopicFundMap(latestZt, latestZb, latestDt));
+  const lanes = buildMainlineLanes({
+    plates,
+    ztPool: latestZt,
+    topicFunds: buildTopicFundMap(latestZt, latestZb, latestDt),
+    historyZtByDate: pools.ztByDate,
+    latestDay,
+    trendingPlates: settledValue(trendingResult, []),
+  });
   snapshot.mainlineLanes = lanes;
   snapshot.diagnostics.主线.facts = mainlineFacts(lanes);
+
+  snapshot.relay = buildRelaySnapshot({
+    days: tradingDays,
+    ztByDate: pools.ztByDate,
+    zbByDate: pools.zbByDate,
+    surge,
+    mainlineThemes: new Set(lanes.map((lane) => lane.name)),
+  });
 
   snapshot.payoffLists.strong = settledValue(strongResult, []);
   snapshot.payoffLists.hot = settledValue(hotResult, []);

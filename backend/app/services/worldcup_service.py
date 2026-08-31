@@ -8,14 +8,12 @@ import logging
 import time
 import re
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
 import httpx
-from redis import asyncio as redis_asyncio
-
 from app.core.config import settings
 from app.services.api_football_service import ApiFootballService
 from app.services.llm_registry import LLMRegistry, LLMProfileName
+from app.services.redis_service import get_async_redis_client
 from app.services.the_odds_api_service import TheOddsApiService
 
 logger = logging.getLogger("uvicorn")
@@ -46,7 +44,6 @@ _ai_analysis_cache: Dict[str, Dict[str, Any]] = {}
 
 
 class WorldCupService:
-    _redis_client: Optional[redis_asyncio.Redis] = None
     _polymarket_cache_key = "worldcup:polymarket:v2"
     _bankroll_ledger_key = "worldcup:bankroll:ledger:v1"
     _ai_analysis_cache_key_prefix = "worldcup:ai_analysis:"
@@ -928,20 +925,8 @@ class WorldCupService:
         return ""
 
     @classmethod
-    def _get_redis_url(cls) -> str:
-        parsed = urlparse(settings.CELERY_BROKER_URL)
-        if parsed.scheme.startswith("redis"):
-            return settings.CELERY_BROKER_URL
-        return settings.CELERY_RESULT_BACKEND
-
-    @classmethod
-    def _get_redis_client(cls) -> redis_asyncio.Redis:
-        if cls._redis_client is None:
-            cls._redis_client = redis_asyncio.from_url(
-                cls._get_redis_url(),
-                decode_responses=True,
-            )
-        return cls._redis_client
+    def _get_redis_client(cls):
+        return get_async_redis_client()
 
     @classmethod
     async def _get_cached_json(cls, key: str) -> Optional[List[Dict[str, Any]]]:

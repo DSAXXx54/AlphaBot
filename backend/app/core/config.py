@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     # 数据源配置
     # 可选值: "alphavantage", "tushare", "akshare", "hk_stock", "tdx"
     DEFAULT_DATA_SOURCE: str = os.getenv("DEFAULT_DATA_SOURCE", "alphavantage")
+    # 市场域数据源：默认源 + 按数据集绑定（JSON，如 {"pools":"eastmoney","quotes":"xgb"}）
+    DEFAULT_MARKET_DATA_SOURCE: str = os.getenv("DEFAULT_MARKET_DATA_SOURCE", "xgb")
+    MARKET_DATA_BINDINGS: str = os.getenv("MARKET_DATA_BINDINGS", "")
+    XGB_FLASH_API_BASE: str = os.getenv("XGB_FLASH_API_BASE", "")
+    XGB_DDC_MARKET_API_BASE: str = os.getenv("XGB_DDC_MARKET_API_BASE", "")
+    XGB_TREND_API_BASE: str = os.getenv("XGB_TREND_API_BASE", "")
+    XGB_REFERER: str = os.getenv("XGB_REFERER", "")
     
     # Alpha Vantage API配置
     ALPHAVANTAGE_API_BASE_URL: str = os.getenv("ALPHAVANTAGE_API_BASE_URL", "https://www.alphavantage.co/query")
