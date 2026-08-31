@@ -151,6 +151,24 @@ function washLabel(minutes: number) {
   return minutes >= 60 ? `洗${(minutes / 60).toFixed(1)}小时` : `洗${minutes}分`;
 }
 
+function formatThemes(themes?: string[]) {
+  return themes && themes.length > 0 ? themes.slice(0, 2).join('/') : '';
+}
+
+function withThemeSummary(summary?: string, themes?: string[]) {
+  const themeText = formatThemes(themes);
+  if (!themeText) return summary;
+  return [`题材：${themeText}`, summary].filter(Boolean).join('\n');
+}
+
+function relayRowLabel(label: string) {
+  return (
+    <span className="w-14 shrink-0 text-[10px] font-medium tracking-wide text-muted-foreground">
+      {label}
+    </span>
+  );
+}
+
 type ReboundStatus = '已回封' | '临封' | '修复' | '异动';
 const STATUS_ORDER: Record<ReboundStatus, number> = { 已回封: 0, 临封: 1, 修复: 2, 异动: 3 };
 const STATUS_COLORS: Record<ReboundStatus, string> = {
@@ -159,11 +177,10 @@ const STATUS_COLORS: Record<ReboundStatus, string> = {
   修复: 'bg-amber-500',
   异动: 'bg-slate-400',
 };
-const STATUS_CHIP_BG: Record<ReboundStatus, string> = {
-  已回封: 'bg-rose-500/10',
-  临封: 'bg-orange-500/10',
-  修复: '',
-  异动: '',
+const REBOUND_PATTERN_ORDER: Record<ReboundPick['pattern'], number> = {
+  连板反包: 0,
+  首板反包: 1,
+  炸板回封: 2,
 };
 
 function eastmoneyStockId(code: string): string | null {
@@ -291,9 +308,12 @@ function RelayCyclePanel({
 }) {
   const { reboundStats } = relay;
   const afterClose = isAfterMarketClose();
-  // 确认组与观察池合并为一张候选池：状态就地标记（已回封/临封/修复/异动），升格不挪窝
+  // 候选先按形态分组，组内再按状态强弱和分数排序
   const reboundPicks = [...relay.reboundConfirmed, ...relay.reboundWatching].sort(
-    (a, b) => STATUS_ORDER[reboundStatus(a)] - STATUS_ORDER[reboundStatus(b)] || b.score - a.score
+    (a, b) =>
+      REBOUND_PATTERN_ORDER[a.pattern] - REBOUND_PATTERN_ORDER[b.pattern] ||
+      STATUS_ORDER[reboundStatus(a)] - STATUS_ORDER[reboundStatus(b)] ||
+      b.score - a.score
   );
   const statusCounts = new Map<ReboundStatus, number>();
   reboundPicks.forEach((pick) => {
@@ -329,6 +349,9 @@ function RelayCyclePanel({
                   >
                     {leader.name}
                     <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(leader.height)}</span>
+                    {leader.themes && leader.themes.length > 0 ? (
+                      <span className="ml-1 text-[10px] text-muted-foreground">{formatThemes(leader.themes)}</span>
+                    ) : null}
                   </button>
                 </MarketStockPreviewTooltip>
               ))}
@@ -341,39 +364,58 @@ function RelayCyclePanel({
             <div className="text-xs font-medium text-muted-foreground">近{relay.days}日接力链（回看）</div>
             <div className="space-y-1.5">
               {relay.chain.map((link) => (
-                <div key={link.date} className="flex flex-wrap items-center gap-1.5 text-xs">
-                  <span className="tabular-nums text-muted-foreground">{link.date.slice(5)}</span>
-                  {link.leaders.map((leader) => (
-                    <MarketStockPreviewTooltip key={leader.code} code={leader.code} name={leader.name}>
-                      <button
-                        type="button"
-                        onClick={() => onSelectStock(leader.code, leader.name)}
-                        className="rounded px-1 py-0.5 text-emerald-700 hover:bg-muted/60 dark:text-emerald-300"
-                      >
-                        {leader.name}
-                        <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(leader.height)}断</span>
-                      </button>
-                    </MarketStockPreviewTooltip>
-                  ))}
-                  <span className="text-muted-foreground">→</span>
-                  {link.successors.length === 0 ? (
-                    <span className="text-muted-foreground">无接力</span>
-                  ) : (
-                    link.successors.map((successor) => (
-                      <MarketStockPreviewTooltip key={successor.code} code={successor.code} name={successor.name}>
+                <div key={link.date} className="grid grid-cols-[48px_120px_16px_minmax(0,1fr)] items-start gap-x-2 text-xs">
+                  <span className="w-12 shrink-0 pt-0.5 text-[10px] tabular-nums text-muted-foreground">
+                    {link.date.slice(5)}
+                  </span>
+                  <div className="min-w-0 flex flex-col gap-1">
+                    {link.leaders.map((leader) => (
+                      <MarketStockPreviewTooltip key={leader.code} code={leader.code} name={leader.name}>
                         <button
                           type="button"
-                          onClick={() => onSelectStock(successor.code, successor.name)}
-                          className={`rounded px-1 py-0.5 hover:bg-muted/60 ${
-                            successor.becameLeader ? 'text-orange-600 dark:text-orange-300' : 'text-foreground'
-                          }`}
+                          onClick={() => onSelectStock(leader.code, leader.name)}
+                          className="w-full overflow-hidden rounded px-1 py-0.5 text-left text-emerald-700 hover:bg-muted/60 dark:text-emerald-300"
                         >
-                          {successor.name}
-                          <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(successor.maxHeight)}</span>
+                          <span className="truncate">
+                            {leader.name}
+                            <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(leader.height)}断</span>
+                            {leader.themes && leader.themes.length > 0 ? (
+                              <span className="ml-1 text-[10px] text-muted-foreground">{formatThemes(leader.themes)}</span>
+                            ) : null}
+                          </span>
                         </button>
                       </MarketStockPreviewTooltip>
-                    ))
-                  )}
+                    ))}
+                  </div>
+                  <span className="pt-0.5 text-center text-muted-foreground">→</span>
+                  <div className="min-w-0 flex flex-wrap items-center gap-1.5">
+                    {link.successors.length === 0 ? (
+                      <span className="text-muted-foreground">无接力</span>
+                    ) : (
+                      link.successors.map((successor) => (
+                        <MarketStockPreviewTooltip
+                          key={successor.code}
+                          code={successor.code}
+                          name={successor.name}
+                          summary={withThemeSummary(undefined, successor.themes)}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => onSelectStock(successor.code, successor.name)}
+                            className={`rounded px-1 py-0.5 hover:bg-muted/60 ${
+                              successor.becameLeader ? 'text-orange-600 dark:text-orange-300' : 'text-foreground'
+                            }`}
+                          >
+                            {successor.name}
+                            <span className="ml-0.5 text-[10px] text-muted-foreground">{boardHeightLabel(successor.maxHeight)}</span>
+                            {successor.themes && successor.themes.length > 0 ? (
+                              <span className="ml-1 text-[10px] text-muted-foreground">{formatThemes(successor.themes)}</span>
+                            ) : null}
+                          </button>
+                        </MarketStockPreviewTooltip>
+                      ))
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -382,46 +424,59 @@ function RelayCyclePanel({
 
         {relay.breaksToday.length > 0 ? (
           <div className="mt-4 rounded-xl bg-muted/25 p-3">
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <span className="text-muted-foreground">{afterClose ? '今日断板' : '今日未封板'}</span>
-              {relay.breaksToday.map((leader) => (
-                <MarketStockPreviewTooltip key={leader.code} code={leader.code} name={leader.name}>
-                  <button
-                    type="button"
-                    onClick={() => onSelectStock(leader.code, leader.name)}
-                    className="rounded px-1.5 py-0.5 font-medium text-emerald-700 hover:bg-muted/60 dark:text-emerald-300"
-                  >
-                    {leader.name}
-                    <span className="ml-0.5 text-[10px] text-muted-foreground">
-                      {boardHeightLabel(leader.height)}
-                      {leader.status === 'zb' ? '炸板' : afterClose ? '断' : ''}
-                    </span>
-                  </button>
-                </MarketStockPreviewTooltip>
-              ))}
-            </div>
-            {relay.watchlist.length > 0 ? (
-              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
-                <span className="text-muted-foreground">首板候选</span>
-                {relay.watchlist.map((candidate) => (
-                  <MarketStockPreviewTooltip key={candidate.code} code={candidate.code} name={candidate.name}>
+            <div className="flex items-start gap-2 text-xs">
+              {relayRowLabel(afterClose ? '今日断板' : '今日未封板')}
+              <div className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5">
+                {relay.breaksToday.map((leader) => (
+                  <MarketStockPreviewTooltip key={leader.code} code={leader.code} name={leader.name}>
                     <button
                       type="button"
-                      onClick={() => onSelectStock(candidate.code, candidate.name)}
-                      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted/60 ${
-                        candidate.sameTheme ? 'bg-orange-500/10 text-orange-700 dark:text-orange-300' : 'text-foreground'
-                      }`}
+                      onClick={() => onSelectStock(leader.code, leader.name)}
+                      className="rounded px-1.5 py-0.5 font-medium text-emerald-700 hover:bg-muted/60 dark:text-emerald-300"
                     >
-                      <span className="font-medium">{candidate.name}</span>
-                      <span className="tabular-nums text-[10px] text-muted-foreground">{candidate.score}分</span>
-                      {candidate.reasons.slice(0, 2).map((reason) => (
-                        <span key={reason} className="rounded bg-muted/60 px-1 text-[10px] text-muted-foreground">
-                          {reason}
-                        </span>
-                      ))}
+                      {leader.name}
+                      <span className="ml-0.5 text-[10px] text-muted-foreground">
+                        {boardHeightLabel(leader.height)}
+                        {leader.status === 'zb' ? '炸板' : afterClose ? '断' : ''}
+                      </span>
+                      {leader.themes && leader.themes.length > 0 ? (
+                        <span className="ml-1 text-[10px] text-muted-foreground">{formatThemes(leader.themes)}</span>
+                      ) : null}
                     </button>
                   </MarketStockPreviewTooltip>
                 ))}
+              </div>
+            </div>
+            {relay.watchlist.length > 0 ? (
+              <div className="mt-2 flex items-start gap-2 text-xs">
+                {relayRowLabel('首板候选')}
+                <div className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5">
+                  {relay.watchlist.map((candidate) => (
+                    <MarketStockPreviewTooltip key={candidate.code} code={candidate.code} name={candidate.name}>
+                      <button
+                        type="button"
+                        onClick={() => onSelectStock(candidate.code, candidate.name)}
+                        className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted/60 ${
+                          candidate.sameTheme ? 'bg-orange-500/10 text-orange-700 dark:text-orange-300' : 'text-foreground'
+                        }`}
+                      >
+                        <span className="font-medium">{candidate.name}</span>
+                        <span className="tabular-nums text-[10px] text-muted-foreground">{candidate.score}分</span>
+                        {candidate.turnoverRate != null ? (
+                          <span className="tabular-nums text-[10px] text-muted-foreground">{candidate.turnoverRate.toFixed(1)}%</span>
+                        ) : null}
+                        {candidate.themes && candidate.themes.length > 0 ? (
+                          <span className="text-[10px] text-muted-foreground">{formatThemes(candidate.themes)}</span>
+                        ) : null}
+                        {candidate.reasons.slice(0, 2).map((reason) => (
+                          <span key={reason} className="rounded bg-muted/60 px-1 text-[10px] text-muted-foreground">
+                            {reason}
+                          </span>
+                        ))}
+                      </button>
+                    </MarketStockPreviewTooltip>
+                  ))}
+                </div>
               </div>
             ) : null}
           </div>
@@ -473,40 +528,59 @@ function RelayCyclePanel({
                 )}
               </span>
             </div>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {reboundPicks.map((stock) => {
-                const status = reboundStatus(stock);
-                const change = stock.change;
+            <div className="mt-2 space-y-1">
+              {(['连板反包', '首板反包', '炸板回封'] as const).map((pattern, groupIndex) => {
+                const items = reboundPicks.filter((stock) => stock.pattern === pattern);
+                if (items.length === 0) return null;
                 return (
-                  <MarketStockPreviewTooltip
-                    key={stock.code}
-                    code={stock.code}
-                    name={stock.name}
-                    summary={stock.analysis || stock.reasons.join(' · ') || undefined}
+                  <div
+                    key={pattern}
+                    className={
+                      groupIndex === 0
+                        ? 'flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs'
+                        : 'flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t border-border/60 pt-1 text-xs'
+                    }
                   >
-                    <button
-                      type="button"
-                      onClick={() => onSelectStock(stock.code, stock.name)}
-                      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:bg-muted/60 ${STATUS_CHIP_BG[status]}`}
-                    >
-                      <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_COLORS[status]}`} />
-                      <span className="font-medium text-foreground">{stock.name}</span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {stock.pattern}·前{boardHeightLabel(stock.prevHeight)}·断{stock.gapDays}日
-                        {stock.brokeToday ? '·炸' : ''}
-                        {stock.wasLeader ? '·前龙头' : ''}
-                        {stock.inMainline ? '·主线' : ''}
-                      </span>
-                      <span className="tabular-nums text-[10px] text-muted-foreground">
-                        {status === '已回封'
-                          ? `${stock.sealTime}·${stock.fund != null && stock.fund > 0 ? `${stock.fund.toFixed(1)}亿` : '--'}`
-                          : change == null
-                            ? '--'
-                            : `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`}
-                        {stock.washMinutes != null ? `·${washLabel(stock.washMinutes)}` : ''}
-                      </span>
-                    </button>
-                  </MarketStockPreviewTooltip>
+                    {items.map((stock) => {
+                      const status = reboundStatus(stock);
+                      const change = stock.change;
+                      return (
+                        <MarketStockPreviewTooltip
+                          key={stock.code}
+                          code={stock.code}
+                          name={stock.name}
+                          summary={withThemeSummary(stock.analysis || stock.reasons.join(' · ') || undefined, stock.themes)}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => onSelectStock(stock.code, stock.name)}
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs hover:bg-muted/60"
+                          >
+                            <span
+                              className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_COLORS[status]}`}
+                            />
+                            <span className="font-medium text-foreground">{stock.name}</span>
+                            <span className="text-[10px] text-muted-foreground">
+                              前{boardHeightLabel(stock.prevHeight)}·断{stock.gapDays}日
+                              {stock.brokeToday ? '·炸' : ''}
+                              {stock.wasLeader ? '·前龙头' : ''}
+                              {stock.inMainline ? '·主线' : ''}
+                            </span>
+                            <span className="tabular-nums text-[10px] text-muted-foreground">
+                              {status === '已回封'
+                                ? `${stock.sealTime}·${stock.fund != null && stock.fund > 0 ? `${stock.fund.toFixed(1)}亿` : '--'}`
+                                : change == null
+                                  ? '--'
+                                  : `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`}
+                              {stock.turnoverRate != null ? `·换手${stock.turnoverRate.toFixed(1)}%` : ''}
+                              {stock.washMinutes != null ? `·${washLabel(stock.washMinutes)}` : ''}
+                              {stock.themes && stock.themes.length > 0 ? `·${formatThemes(stock.themes)}` : ''}
+                            </span>
+                          </button>
+                        </MarketStockPreviewTooltip>
+                      );
+                    })}
+                  </div>
                 );
               })}
             </div>

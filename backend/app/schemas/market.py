@@ -60,6 +60,7 @@ class TopicStockItem(BaseModel):
     type: str
     fund: int
     price: float
+    turnoverRate: float | None = None
     zbc: int | None = None
     firstBreak: int | None = None
     lastSealTs: int | None = None

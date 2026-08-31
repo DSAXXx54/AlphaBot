@@ -184,12 +184,14 @@ export type RelayLeader = {
   name: string;
   code: string;
   height: number;
+  themes?: string[];
 };
 
 /** 断板日首板的事后走势（回看确认） */
 export type RelaySuccessor = {
   name: string;
   code: string;
+  themes?: string[];
   /** 首板之后达到的最高连板数 */
   maxHeight: number;
   /** 次日 1进2 确认 */
@@ -215,6 +217,7 @@ export type RelayBreak = {
   height: number;
   /** zb=今日已炸板（断板基本确认）；absent=暂未见涨停 */
   status: 'zb' | 'absent';
+  themes?: string[];
 };
 
 /** 断板日首板缩圈候选（盘中/盘后实时评分） */
@@ -225,10 +228,12 @@ export type RelayCandidate = {
   score: number;
   reasons: string[];
   sameTheme: boolean;
+  themes?: string[];
   sealTime: string;
   /** 亿元 */
   fund: number;
   price: number;
+  turnoverRate?: number;
 };
 
 /** 今日反包股：前一轮 lbc≥2，断 ≥1 日后回封 */
@@ -240,6 +245,7 @@ export type ReboundPick = {
   name: string;
   code: string;
   pattern: ReboundPattern;
+  themes?: string[];
   /** 前高（最后一次涨停日的连板高度；今日首板炸板无历史时记 1） */
   prevHeight: number;
   /** 确认组=断板间隔（炸板回封为 0）；观察池=今日距上次涨停的天数（昨日涨停=1） */
@@ -261,6 +267,8 @@ export type ReboundPick = {
   /** 封单额（亿元，确认组） */
   fund?: number;
   price?: number | null;
+  /** 换手率% */
+  turnoverRate?: number | null;
   /** 实时涨幅%（观察池，行情缺失为 null） */
   change?: number | null;
   /** 异动池文案 */

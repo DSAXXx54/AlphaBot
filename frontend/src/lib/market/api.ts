@@ -50,6 +50,7 @@ export type TopicStock = {
   type: 'zt' | 'zb' | 'dt';
   fund: number;
   price: number;
+  turnoverRate?: number;
   /** 当日炸板次数，断板反包/接力评分用 */
   zbc?: number;
   /** 当日首次炸板时刻（unix 秒），异动反包洗盘时长用 */

@@ -92,6 +92,7 @@ class XgbMarketDataSource(MarketDataSourceBase):
                 "type": kind,
                 "fund": round(ratio * capital),
                 "price": num(item.get("price")),
+                "turnoverRate": num(item.get("turnover_ratio")) * 100,
                 "zbc": int(num(item.get("break_limit_up_times"))),
                 "firstBreak": int(item["first_break_limit_up"]) if item.get("first_break_limit_up") else None,
                 "lastSealTs": int(item["last_limit_up"]) if item.get("last_limit_up") else None,

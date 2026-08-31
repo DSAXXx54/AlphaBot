@@ -86,6 +86,9 @@ private 未加载时，主线/反包/接力评分整体降级为空（snapshot �
 | earlySeal | 回封时刻 ≤ public.rebound.earlySealMinutes 的得分 |
 | fundStrong / fundStrongYi | 封单 ≥ fundStrongYi 亿时的得分档 |
 | fundMid / fundMidYi | 封单 ≥ fundMidYi 亿（不足强档）时的得分档 |
+| turnoverBest / turnoverBestMin / turnoverBestMax | 换手率落在甜区 [min,max] 的加分 |
+| turnoverMid / turnoverMidMin / turnoverMidMax | 换手率落在次优区间 [min,max) 的加分 |
+| turnoverHotPenalty / turnoverHotMin | 换手率 ≥ turnoverHotMin% 视为过热，触发扣分 |
 | zbcHigh | 炸板次数"高位"阈值：次数 ≥ zbcHigh 触发重罚 |
 | zbcPenalty | 炸板次数 ≥ zbcHigh 的扣分 |
 | zbcMidPenalty | 炸板次数 = zbcHigh − 1 的中档扣分 |
@@ -106,6 +109,9 @@ private 未加载时，主线/反包/接力评分整体降级为空（snapshot �
 | midPrice / midPriceMax | 股价 ≤ midPriceMax 元（不足低价档）的次档得分 |
 | fundStrong / fundStrongYi | 封单 ≥ fundStrongYi 亿的得分档 |
 | fundMid / fundMidYi | 封单 ≥ fundMidYi 亿的次档得分 |
+| turnoverBest / turnoverBestMin / turnoverBestMax | 换手率落在甜区 [min,max] 的加分 |
+| turnoverMid / turnoverMidMin / turnoverMidMax | 换手率落在次优区间 [min,max) 的加分 |
+| turnoverHotPenalty / turnoverHotMin | 换手率 ≥ turnoverHotMin% 视为过热，触发扣分 |
 | lowZbc / lowZbcMax | 炸板次数 ≤ lowZbcMax 的"低炸板"加分 |
 
 ### flowStrength —— 资金强度（`flowStrength.ts`）

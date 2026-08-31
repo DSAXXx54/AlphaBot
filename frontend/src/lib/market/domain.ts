@@ -63,7 +63,7 @@ export type IndexBar = { date: string; open: number; close: number; high: number
 export async function fetchPoolDomain(
   kind: 'zt' | 'zb' | 'dt',
   dateHyphen?: string
-): Promise<Array<{ name: string; code: string; reason: string; concepts?: string[]; lbc: number; time: number; type: 'zt' | 'zb' | 'dt'; fund: number; price: number; zbc: number; firstBreak?: number; lastSealTs?: number }>> {
+): Promise<Array<{ name: string; code: string; reason: string; concepts?: string[]; lbc: number; time: number; type: 'zt' | 'zb' | 'dt'; fund: number; price: number; turnoverRate?: number; zbc: number; firstBreak?: number; lastSealTs?: number }>> {
   return domainListGet(`/market/pool/${kind}`, dateHyphen ? { date: dateHyphen } : undefined);
 }
 

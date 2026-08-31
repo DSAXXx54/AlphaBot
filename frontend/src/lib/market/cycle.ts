@@ -38,13 +38,22 @@ function sealClock(minutes: number): string {
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 }
 
+function topicNames(stock: Pick<TopicStock, 'concepts' | 'reason'>): string[] {
+  return Array.from(new Set(stockConcepts(stock).map((name) => name.trim()).filter(Boolean))).slice(0, 2);
+}
+
 /** 退市风险股（ST/*ST/退市整理）：涨跌幅规则与流动性都不同，接力/反包两张卡片均剔除 */
 function isDelistingRisk(name: string): boolean {
   return /ST/i.test(name) || /退$/.test(name);
 }
 
 function toLeader(stock: TopicStock): RelayLeader {
-  return { name: stock.name, code: stock.code, height: Math.max(1, stock.lbc || 1) };
+  return {
+    name: stock.name,
+    code: stock.code,
+    height: Math.max(1, stock.lbc || 1),
+    themes: topicNames(stock),
+  };
 }
 
 function dayLeaders(ztList: TopicStock[]): TopicStock[] {
@@ -139,10 +148,18 @@ function scoreFirstBoard(
     add('midPrice', fb.midPrice, '低价');
   }
   const fund = (stock.fund || 0) / 1e8;
+  const turnoverRate = stock.turnoverRate || 0;
   if (fund >= fb.fundStrongYi) {
     add('fundStrong', fb.fundStrong, '封单1亿+');
   } else if (fund >= fb.fundMidYi) {
     add('fundMid', fb.fundMid, '封单实');
+  }
+  if (turnoverRate >= fb.turnoverHotMin) {
+    add('turnoverHotPenalty', -fb.turnoverHotPenalty, `换手过热${turnoverRate.toFixed(1)}%`);
+  } else if (turnoverRate >= fb.turnoverBestMin && turnoverRate <= fb.turnoverBestMax) {
+    add('turnoverBest', fb.turnoverBest, `换手甜区${turnoverRate.toFixed(1)}%`);
+  } else if (turnoverRate >= fb.turnoverMidMin && turnoverRate < fb.turnoverMidMax) {
+    add('turnoverMid', fb.turnoverMid, `换手适中${turnoverRate.toFixed(1)}%`);
   }
   if ((stock.zbc || 0) <= fb.lowZbcMax) {
     add('lowZbc', fb.lowZbc, '低炸板');
@@ -154,9 +171,11 @@ function scoreFirstBoard(
     score,
     reasons,
     sameTheme,
+    themes: topicNames(stock),
     sealTime: sealClock(stock.time),
     fund,
     price: stock.price,
+    turnoverRate: stock.turnoverRate,
   };
 }
 
@@ -184,6 +203,7 @@ function scoreReboundPick(input: {
   marketMaxHeight?: number;
   sealTimeMin?: number;
   fundYi?: number;
+  turnoverRate?: number;
 }): { score: number; reasons: string[]; breakdown: Record<string, number> } {
   const reasons: string[] = [];
   const breakdown: Record<string, number> = {};
@@ -223,6 +243,21 @@ function scoreReboundPick(input: {
     add('fundStrong', w.fundStrong, '封单1亿+');
   } else if (input.fundYi != null && input.fundYi >= w.fundMidYi) {
     add('fundMid', w.fundMid, '封单实');
+  }
+  if (input.turnoverRate != null && input.turnoverRate >= w.turnoverHotMin) {
+    add('turnoverHotPenalty', -w.turnoverHotPenalty, `换手过热${input.turnoverRate.toFixed(1)}%`);
+  } else if (
+    input.turnoverRate != null &&
+    input.turnoverRate >= w.turnoverBestMin &&
+    input.turnoverRate <= w.turnoverBestMax
+  ) {
+    add('turnoverBest', w.turnoverBest, `换手甜区${input.turnoverRate.toFixed(1)}%`);
+  } else if (
+    input.turnoverRate != null &&
+    input.turnoverRate >= w.turnoverMidMin &&
+    input.turnoverRate < w.turnoverMidMax
+  ) {
+    add('turnoverMid', w.turnoverMid, `换手适中${input.turnoverRate.toFixed(1)}%`);
   }
   if (input.zbc >= w.zbcHigh) {
     add('zbcPenalty', -w.zbcPenalty, `${input.zbc}次炸板`);
@@ -284,6 +319,7 @@ function detectResealsAt(series: DaySeries[], dayIndex: number, mainlineThemes: 
       marketMaxHeight: current.maxHeight,
       sealTimeMin: stock.time,
       fundYi,
+      turnoverRate: stock.turnoverRate,
     });
     const nextDay = series[dayIndex + 1];
     results.push({
@@ -291,6 +327,7 @@ function detectResealsAt(series: DaySeries[], dayIndex: number, mainlineThemes: 
         name: stock.name,
         code,
         pattern,
+        themes: topicNames(stock),
         prevHeight,
         gapDays,
         score,
@@ -300,6 +337,7 @@ function detectResealsAt(series: DaySeries[], dayIndex: number, mainlineThemes: 
         sealTime: sealClock(stock.time),
         fund: fundYi,
         price: stock.price,
+        turnoverRate: stock.turnoverRate,
         zbc,
         washMinutes,
         breakdown,
@@ -340,6 +378,7 @@ function buildReboundWatching(
   universe.forEach((meta, code) => {
     if (isDelistingRisk(meta.name)) return; // 退市风险股剔除
     if (today.byCode.has(code)) return; // 已回封，在确认组
+    const brokenStock = today.zb.find((stock) => normalizeCode(stock.code) === code);
     const prior = lastSeal(series, series.length - 1, code);
     let prevHeight = 1;
     let gapDays: number;
@@ -353,7 +392,7 @@ function buildReboundWatching(
     }
     const wasLeader = Boolean(prior && prevHeight >= series[prior.idx].maxHeight);
     const inMainline = meta.concepts.some((name) => mainlineThemes.has(name));
-    const zbc = today.zb.find((stock) => normalizeCode(stock.code) === code)?.zbc || 0;
+    const zbc = brokenStock?.zbc || 0;
     const pattern: ReboundPattern = prevHeight >= 2 ? '连板反包' : '首板反包';
     const { score, reasons, breakdown } = scoreReboundPick({
       pattern,
@@ -364,11 +403,13 @@ function buildReboundWatching(
       inMainline,
       isConfirmed: false,
       marketMaxHeight: today.maxHeight,
+      turnoverRate: brokenStock?.turnoverRate,
     });
     results.push({
       name: meta.name,
       code,
       pattern,
+      themes: Array.from(new Set(meta.concepts.map((name) => name.trim()).filter(Boolean))).slice(0, 2),
       prevHeight,
       gapDays,
       score,
@@ -378,6 +419,7 @@ function buildReboundWatching(
       brokeToday: today.zbByCode.has(code),
       change: null,
       price: null,
+      turnoverRate: brokenStock?.turnoverRate ?? null,
       analysis: meta.analysis,
       zbc,
     });
@@ -416,6 +458,7 @@ export function buildRelaySnapshot(params: {
         return {
           name: stock.name,
           code: stock.code,
+          themes: topicNames(stock),
           maxHeight,
           confirmed: maxHeight >= 2,
           becameLeader: maxHeight >= 3,
@@ -448,6 +491,7 @@ export function buildRelaySnapshot(params: {
       code: leader.code,
       height: leader.lbc || 1,
       status: today.zbByCode.has(normalizeCode(leader.code)) ? ('zb' as const) : ('absent' as const),
+      themes: topicNames(leader),
     }));
 
   // ── 断板日首板缩圈（仅断板发生时有意义）──

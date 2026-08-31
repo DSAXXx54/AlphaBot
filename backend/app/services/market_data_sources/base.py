@@ -78,6 +78,7 @@ class PoolItem(TypedDict, total=False):
     type: str  # 'zt' | 'zb' | 'dt'
     fund: int  # 元
     price: float
+    turnoverRate: float  # %
     zbc: int
     firstBreak: Optional[int]
     lastSealTs: Optional[int]
