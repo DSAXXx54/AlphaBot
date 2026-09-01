@@ -5,7 +5,6 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import { StockInfo } from '../types';
 import { ChartLine, Search, Settings, Info, Bot, LogIn, User, LogOut, Key, Flame, Trophy, Sparkles, RefreshCw, Lock } from 'lucide-react';
 import { Button } from '../components/ui/button';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
@@ -23,6 +22,7 @@ import {
 } from '@/lib/market/snapshot';
 import type { MarketCardLabel, MarketSnapshot, ReboundPick, RelaySnapshot } from '@/lib/market/types';
 import { isAuthRequiredView, loginUrl, parseHomeView } from '@/lib/authRedirect';
+import { StockPreviewTooltip as MarketStockPreviewTooltip } from '@/components/StockPreviewTooltip';
 
 const StockSearch = dynamic(() => import('../components/StockSearch'), { ssr: false });
 const StockDetail = dynamic(() => import('../components/StockDetail'), { ssr: false });
@@ -118,8 +118,6 @@ const EMPTY_CARD_DETAILS: Record<MarketCardLabel, boolean> = {
 };
 const MARKET_TRADING_RELOAD_MS = 60_000;
 const RELAY_UNLOCK_POINTS = 1000;
-const EASTMONEY_PICTURE_TOKEN = '44c9d251add88e27b65ed86506f6e5da';
-const EASTMONEY_PICTURE_RT = '1855';
 
 type MarketPageLoadMeta = {
   sessionKey: string;
@@ -182,89 +180,6 @@ const REBOUND_PATTERN_ORDER: Record<ReboundPick['pattern'], number> = {
   首板反包: 1,
   炸板回封: 2,
 };
-
-function eastmoneyStockId(code: string): string | null {
-  const normalized = (code || '').trim().toUpperCase().replace(/\.(SZ|SS|SH|BJ)$/, '');
-  if (!/^\d{6}$/.test(normalized)) return null;
-  if (/^(6|5|9)/.test(normalized)) return `${normalized}1`;
-  if (/^(0|2|3)/.test(normalized)) return `${normalized}2`;
-  if (/^(4|8)/.test(normalized)) return `${normalized}0`;
-  return null;
-}
-
-function eastmoneyPictureUrl(code: string, imageType: 'KXL' | 'r'): string | null {
-  const id = eastmoneyStockId(code);
-  if (!id) return null;
-  const base =
-    imageType === 'KXL'
-      ? 'https://webquoteklinepic.eastmoney.com/GetPic.aspx'
-      : 'https://webquotepic.eastmoney.com/GetPic.aspx';
-  const params = new URLSearchParams({
-    id,
-    formula: 'MACD',
-    imageType,
-    token: EASTMONEY_PICTURE_TOKEN,
-    rt: EASTMONEY_PICTURE_RT,
-  });
-  return `${base}?${params.toString()}`;
-}
-
-function MarketStockPreviewTooltip({
-  code,
-  name,
-  summary,
-  children,
-}: {
-  code: string;
-  name: string;
-  summary?: string;
-  children: React.ReactElement;
-}) {
-  const dailyUrl = eastmoneyPictureUrl(code, 'KXL');
-  const intradayUrl = eastmoneyPictureUrl(code, 'r');
-
-  if (!dailyUrl || !intradayUrl) return children;
-
-  return (
-    <TooltipProvider delayDuration={160}>
-      <Tooltip>
-        <TooltipTrigger asChild>{children}</TooltipTrigger>
-        <TooltipContent
-          side="top"
-          align="start"
-          sideOffset={10}
-          className="w-[720px] rounded-2xl border border-slate-200/75 bg-white/96 p-3 text-slate-700 shadow-[0_18px_36px_rgba(15,23,42,0.16)] backdrop-blur-sm dark:border-slate-800 dark:bg-slate-950/92 dark:text-slate-200"
-        >
-          {summary ? (
-            <div className="mb-2 whitespace-pre-wrap text-[11px] leading-5 text-slate-600 dark:text-slate-300">
-              {summary}
-            </div>
-          ) : null}
-          <div className="grid grid-cols-2 gap-2">
-            <div className="flex items-center justify-center rounded-xl border border-slate-200/70 bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
-              <img
-                src={dailyUrl}
-                alt={`${name} 日K预览`}
-                className="h-[220px] w-full object-contain"
-                loading="lazy"
-                referrerPolicy="no-referrer"
-              />
-            </div>
-            <div className="flex items-center justify-center rounded-xl border border-slate-200/70 bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
-              <img
-                src={intradayUrl}
-                alt={`${name} 分时预览`}
-                className="h-[220px] w-full object-contain"
-                loading="lazy"
-                referrerPolicy="no-referrer"
-              />
-            </div>
-          </div>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
 
 /** 反包候选的当前状态：已回封看封单/时间，未回封按盘中涨幅分级 */
 function reboundStatus(pick: ReboundPick): ReboundStatus {
@@ -1420,18 +1335,24 @@ export default function Home() {
                                             : 'text-emerald-700 dark:text-emerald-300';
                                       const mark = isFirst ? '' : stock.result === 'success' ? '✓' : stock.result === 'broken' ? '⚡' : '✕';
                                       return (
-                                        <button
+                                        <MarketStockPreviewTooltip
                                           key={`${row.progress}-${stock.code || stock.name}`}
-                                          type="button"
-                                          onClick={() => handleSelectMarketStock(stock.code, stock.name)}
-                                          className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:bg-muted/60 ${tone}`}
+                                          code={stock.code}
+                                          name={stock.name}
+                                          summary={stock.plate ? `题材：${stock.plate}` : undefined}
                                         >
-                                          {mark ? <span>{mark}</span> : null}
-                                          <span>{stock.name}</span>
-                                          {stock.plate ? (
-                                            <span className="text-[10px] text-muted-foreground">{stock.plate}</span>
-                                          ) : null}
-                                        </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleSelectMarketStock(stock.code, stock.name)}
+                                            className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:bg-muted/60 ${tone}`}
+                                          >
+                                            {mark ? <span>{mark}</span> : null}
+                                            <span>{stock.name}</span>
+                                            {stock.plate ? (
+                                              <span className="text-[10px] text-muted-foreground">{stock.plate}</span>
+                                            ) : null}
+                                          </button>
+                                        </MarketStockPreviewTooltip>
                                       );
                                     })}
                                   </div>
@@ -1486,16 +1407,18 @@ export default function Home() {
                           ) : null}
                           <div className="mt-5 text-xs text-muted-foreground">龙头股</div>
                           {leader ? (
-                            <button
-                              type="button"
-                              onClick={() => handleSelectMarketStock(leader.code, leader.name)}
-                              className="mt-2 flex w-full items-center justify-between gap-3 rounded-xl bg-muted/25 px-3 py-2 text-left hover:bg-muted/40"
-                            >
-                              <span className="truncate text-sm font-medium text-foreground">{leader.name}</span>
-                              <span className="shrink-0 text-xs font-semibold text-orange-600 dark:text-orange-300">
-                                {boardHeightLabel(leader.lbc)}
-                              </span>
-                            </button>
+                            <MarketStockPreviewTooltip code={leader.code} name={leader.name}>
+                              <button
+                                type="button"
+                                onClick={() => handleSelectMarketStock(leader.code, leader.name)}
+                                className="mt-2 flex w-full items-center justify-between gap-3 rounded-xl bg-muted/25 px-3 py-2 text-left hover:bg-muted/40"
+                              >
+                                <span className="truncate text-sm font-medium text-foreground">{leader.name}</span>
+                                <span className="shrink-0 text-xs font-semibold text-orange-600 dark:text-orange-300">
+                                  {boardHeightLabel(leader.lbc)}
+                                </span>
+                              </button>
+                            </MarketStockPreviewTooltip>
                           ) : (
                             <div className="mt-2 text-sm text-muted-foreground">暂无涨停</div>
                           )}
@@ -1503,17 +1426,22 @@ export default function Home() {
                           {lane.followers.length > 0 ? (
                             <div className="mt-2 flex flex-wrap gap-1.5">
                               {lane.followers.map((stock, index) => (
-                                <button
+                                <MarketStockPreviewTooltip
                                   key={`${lane.name}-${stock.code || stock.name}-${index}`}
-                                  type="button"
-                                  onClick={() => handleSelectMarketStock(stock.code, stock.name)}
-                                  className="rounded-lg border border-border/60 bg-muted/20 px-2 py-1 text-xs text-foreground hover:border-orange-300 hover:text-orange-600"
+                                  code={stock.code}
+                                  name={stock.name}
                                 >
-                                  {stock.name}
-                                  <span className="ml-1 text-orange-600/80 dark:text-orange-300">
-                                    {boardHeightLabel(stock.lbc)}
-                                  </span>
-                                </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSelectMarketStock(stock.code, stock.name)}
+                                    className="rounded-lg border border-border/60 bg-muted/20 px-2 py-1 text-xs text-foreground hover:border-orange-300 hover:text-orange-600"
+                                  >
+                                    {stock.name}
+                                    <span className="ml-1 text-orange-600/80 dark:text-orange-300">
+                                      {boardHeightLabel(stock.lbc)}
+                                    </span>
+                                  </button>
+                                </MarketStockPreviewTooltip>
                               ))}
                             </div>
                           ) : (

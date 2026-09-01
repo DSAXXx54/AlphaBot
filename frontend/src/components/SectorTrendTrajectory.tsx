@@ -6,6 +6,7 @@ import { flowStrengthScore, percentileRank } from '@/lib/market/flowStrength';
 import { getStrategy } from '@/lib/market/strategy';
 import type { MarketTrendPanelData, MarketTrendStage, MarketTrendTopic } from '@/lib/market/types';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { StockPreviewTooltip } from '@/components/StockPreviewTooltip';
 import { cn } from '@/lib/utils';
 
 type SectorTrendTrajectoryProps = {
@@ -1096,21 +1097,22 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                       <div className="max-h-[236px] overflow-y-auto pr-1">
                         <div className="grid gap-2">
                         {structureRoles.map((role) => (
-                          <button
-                            key={`${role.role}-${role.name}`}
-                            type="button"
-                            onClick={() => role.code && onSelectStock?.(role.code, role.name)}
-                            className="rounded-[14px] border border-border/60 bg-muted/10 px-2.5 py-2 text-left transition-all hover:-translate-y-[1px] hover:border-orange-300/70 hover:shadow-[0_12px_28px_rgba(249,115,22,0.08)]"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex min-w-0 items-center gap-1.5">
-                                <div className="truncate text-sm font-semibold text-foreground">{role.name}</div>
-                                <span className="shrink-0 rounded-full bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">{role.role}</span>
+                          <StockPreviewTooltip key={`${role.role}-${role.name}`} code={role.code} name={role.name} summary={role.note}>
+                            <button
+                              type="button"
+                              onClick={() => role.code && onSelectStock?.(role.code, role.name)}
+                              className="rounded-[14px] border border-border/60 bg-muted/10 px-2.5 py-2 text-left transition-all hover:-translate-y-[1px] hover:border-orange-300/70 hover:shadow-[0_12px_28px_rgba(249,115,22,0.08)]"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  <div className="truncate text-sm font-semibold text-foreground">{role.name}</div>
+                                  <span className="shrink-0 rounded-full bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">{role.role}</span>
+                                </div>
+                                {role.code ? <div className="shrink-0 text-[10px] text-muted-foreground">{role.code}</div> : null}
                               </div>
-                              {role.code ? <div className="shrink-0 text-[10px] text-muted-foreground">{role.code}</div> : null}
-                            </div>
-                            <div className="mt-1 line-clamp-1 text-[11px] leading-4 text-muted-foreground">{role.note}</div>
-                          </button>
+                              <div className="mt-1 line-clamp-1 text-[11px] leading-4 text-muted-foreground">{role.note}</div>
+                            </button>
+                          </StockPreviewTooltip>
                         ))}
                         </div>
                       </div>
@@ -1431,13 +1433,15 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                         <td className="px-5 py-3 text-foreground">{index + 1}</td>
                         <td className="px-5 py-3 text-muted-foreground">{member.code}</td>
                         <td className="px-5 py-3 font-medium text-foreground">
-                          <button
-                            type="button"
-                            onClick={() => onSelectStock?.(member.code, member.name)}
-                            className="cursor-pointer text-left text-foreground hover:text-orange-600"
-                          >
-                            {member.name}
-                          </button>
+                          <StockPreviewTooltip code={member.code} name={member.name}>
+                            <button
+                              type="button"
+                              onClick={() => onSelectStock?.(member.code, member.name)}
+                              className="cursor-pointer text-left text-foreground hover:text-orange-600"
+                            >
+                              {member.name}
+                            </button>
+                          </StockPreviewTooltip>
                           {member.status ? (
                             <TooltipProvider>
                               <Tooltip>
