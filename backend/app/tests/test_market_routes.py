@@ -1,5 +1,6 @@
 import logging
 import json
+import time
 
 import pytest
 
@@ -361,6 +362,78 @@ class TestMarketDomainServiceCaching:
         payload = await MarketDomainService.get_fundflow("000001", 5)
 
         assert payload["items"] == {"000001": [{"date": latest_day, "netInflow": 1.0}]}
+
+    @pytest.mark.asyncio
+    async def test_payoff_drawdown_accepts_legacy_list_cache_shape(self, monkeypatch):
+        latest_day = "20260901"
+        cache_key = market_cache.payoff_key("drawdown", latest_day)
+        legacy_items = [
+            {"name": "Alpha", "change": -3.2, "maxDrawdown": -8.6, "industryBlock": "AI"}
+        ]
+
+        async def fake_cache_trade_day():
+            return latest_day
+
+        async def fake_is_closed_window():
+            return False
+
+        async def fake_get_json(key: str):
+            assert key == cache_key
+            return legacy_items
+
+        async def fail_single_flight_freshness(*args, **kwargs):
+            raise AssertionError("freshness refresh should not run when serving legacy cache within fallback path")
+
+        monkeypatch.setattr(MarketDomainService, "_cache_trade_day", fake_cache_trade_day)
+        monkeypatch.setattr(MarketDomainService, "_is_closed_window", fake_is_closed_window)
+        monkeypatch.setattr(market_cache, "get_json", fake_get_json)
+        monkeypatch.setattr(MarketDomainService, "_single_flight_freshness", fail_single_flight_freshness)
+        monkeypatch.setattr(MarketDomainService, "_trade_day_fetched_at", lambda payload: time.time())
+
+        payload = await MarketDomainService.get_payoff("drawdown", latest_day)
+
+        assert payload["items"] == legacy_items
+
+    @pytest.mark.asyncio
+    async def test_payoff_history_stores_trade_day_payload(self, monkeypatch):
+        latest_day = "20260901"
+        history_day = "20260831"
+        cache_key = market_cache.payoff_key("drawdown", history_day)
+        stored = {}
+        expected_items = [{"name": "Alpha", "change": -3.2, "maxDrawdown": -8.6}]
+
+        async def fake_cache_trade_day():
+            return latest_day
+
+        async def fake_get_json(key: str):
+            return stored.get(key)
+
+        async def fake_cached_call(key, ttl, fetch):
+            assert key == cache_key
+            assert ttl == MarketDomainService.PAYOFF_DRAWDOWN_HISTORY_TTL_SECONDS
+            stored[key] = await fetch()
+            return stored[key]
+
+        class FakeSource:
+            async def fetch_payoff(self, kind, date):
+                assert kind == "drawdown"
+                assert date == history_day
+                return expected_items
+
+        monkeypatch.setattr(MarketDomainService, "_cache_trade_day", fake_cache_trade_day)
+        monkeypatch.setattr(market_cache, "get_json", fake_get_json)
+        monkeypatch.setattr(market_cache, "cached_call", fake_cached_call)
+        monkeypatch.setattr(
+            "app.services.market_domain_service.MarketDataSourceFactory.get_data_source",
+            lambda dataset: FakeSource(),
+        )
+
+        payload = await MarketDomainService.get_payoff("drawdown", history_day)
+
+        assert payload == {"items": expected_items}
+        assert stored[cache_key]["date"] == history_day
+        assert stored[cache_key]["items"] == expected_items
+        assert isinstance(stored[cache_key]["fetchedAtTs"], float)
 
 
 class TestMarketStrategyService:

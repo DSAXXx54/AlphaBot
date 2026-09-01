@@ -73,6 +73,20 @@ class MarketDomainService:
         offset = int.from_bytes(digest[:2], "big") % (spread * 2 + 1) - spread
         return max(1, ttl_seconds + offset)
 
+    @staticmethod
+    def _trade_day_items_from_payload(payload: Any) -> Any:
+        if isinstance(payload, dict):
+            return payload.get("items") or []
+        if isinstance(payload, list):
+            return payload
+        return []
+
+    @staticmethod
+    def _trade_day_fetched_at(payload: Any) -> float:
+        if isinstance(payload, dict):
+            return float(payload.get("fetchedAtTs") or 0)
+        return 0.0
+
     @classmethod
     async def latest_trading_day(cls) -> str:
         calendar = await TradingCalendarService.get_trade_calendar()
@@ -136,11 +150,11 @@ class MarketDomainService:
         if payload is not None:
             if closed:
                 log_hit()
-                return payload.get("items") or []
-            fetched_at = float(payload.get("fetchedAtTs") or 0)
+                return cls._trade_day_items_from_payload(payload)
+            fetched_at = cls._trade_day_fetched_at(payload)
             if time.time() - fetched_at < refresh_seconds:
                 log_hit()
-                return payload.get("items") or []
+                return cls._trade_day_items_from_payload(payload)
 
         if payload is None:
             payload = await market_cache.cached_call(
@@ -149,7 +163,7 @@ class MarketDomainService:
                 fetch_payload,
             )
             log_refresh()
-            return payload.get("items") or []
+            return cls._trade_day_items_from_payload(payload)
 
         await cls._single_flight_freshness(
             freshness_key or label,
@@ -162,7 +176,7 @@ class MarketDomainService:
         )
         refreshed = await market_cache.get_json(cache_key) or payload
         log_refresh()
-        return refreshed.get("items") or []
+        return cls._trade_day_items_from_payload(refreshed)
 
     @classmethod
     async def _ensure_pool_fresh(cls, kind: str) -> None:
@@ -499,12 +513,17 @@ class MarketDomainService:
         normalized_date = cls._normalize_day(date) or latest
         cache_key = market_cache.payoff_key(kind, normalized_date)
         if normalized_date != latest:
-            items = await cls._cached(
+            async def fetch_history_payload() -> dict[str, Any]:
+                items = await MarketDataSourceFactory.get_data_source(dataset).fetch_payoff(kind, normalized_date)
+                return {"date": normalized_date, "fetchedAtTs": time.time(), "items": items or []}
+
+            payload = await cls._cached(
                 cache_key,
                 cls.PAYOFF_DRAWDOWN_HISTORY_TTL_SECONDS,
-                lambda: MarketDataSourceFactory.get_data_source(dataset).fetch_payoff(kind, normalized_date),
+                fetch_history_payload,
                 f"payoff:{kind}",
             )
+            items = cls._trade_day_items_from_payload(payload)
         else:
             items = await cls._get_trade_day_items(
                 cache_key=cache_key,
