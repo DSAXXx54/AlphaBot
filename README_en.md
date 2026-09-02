@@ -1,6 +1,12 @@
-[中文](README.md)|English
+<h1 align="center">AlphaBot · Your Intelligent Stock Analysis Assistant</h1>
 
-# 🤖 AlphaBot - Your Intelligent Stock Analysis Assistant
+<p align="center"><a href="README.md">中文</a> · English</p>
+
+<p align="center">
+  <a href="https://www.bilibili.com/video/BV14ZxEz2EYS/?share_source=copy_web&amp;vd_source=ad23b126ca275748fca93b1519b60b36"><img src="https://img.shields.io/badge/Bilibili-%E4%BD%BF%E7%94%A8%E6%95%99%E7%A8%8B-00A1D6?style=flat&amp;logo=bilibili&amp;logoColor=white" alt="Bilibili 使用教程" /></a>
+  <a href="https://openpup.x-pai.com/"><img src="https://img.shields.io/badge/OpenPup-%E5%B0%8F%E7%8B%97%E7%8B%97-0F766E?style=flat" alt="OpenPup 小狗狗" /></a>
+  <a href="https://mp.weixin.qq.com/s/RsLTve_tlBN4vihx17JaqQ"><img src="https://img.shields.io/badge/%E5%BE%AE%E4%BF%A1%E5%85%AC%E4%BC%97%E5%8F%B7-%E8%A1%8C%E5%8A%A8%E4%B9%8B%E5%89%8D-07C160?style=flat&amp;logo=wechat&amp;logoColor=white" alt="微信公众号 行动之前" /></a>
+</p>
 
 > "In the stock market, it's not the smartest who make money, but the most disciplined." — Warren Buffett (probably never said this, but sounds right)
 
