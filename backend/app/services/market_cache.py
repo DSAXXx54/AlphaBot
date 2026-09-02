@@ -3,7 +3,7 @@
 
 设计约束：
 - key 统一带交易日锚点，避免跨日复用旧数据
-- 不再降级为进程内存，Redis 不可达时直接视为未命中
+- 不再降级为进程内存，Redis 不可达时抛出 503 对应异常
 - “是否需要盘中刷新” 由 MarketDomainService 的读时策略决定
 """
 
@@ -21,44 +21,53 @@ _redis = None
 _redis_failed_until = 0.0
 
 
+class MarketCacheUnavailable(RuntimeError):
+    """Redis, the required market cache backend, is unavailable."""
+
+
+def _mark_redis_failed() -> None:
+    global _redis, _redis_failed_until
+    _redis = None
+    _redis_failed_until = time.time() + 30
+
+
 async def _client():
     global _redis, _redis_failed_until
     if _redis is not None:
         return _redis
     now = time.time()
     if now < _redis_failed_until:
-        return None
+        raise MarketCacheUnavailable("Redis is temporarily unavailable")
     try:
-        _redis = get_async_redis_client()
-        await _redis.ping()
-        return _redis
-    except Exception:
-        _redis = None
-        _redis_failed_until = now + 30
-        return None
+        client = get_async_redis_client()
+        await client.ping()
+        _redis = client
+        return client
+    except Exception as exc:
+        _mark_redis_failed()
+        raise MarketCacheUnavailable("Redis connection failed") from exc
 
 async def get_json(key: str) -> Optional[Any]:
     r = await _client()
-    if r is not None:
-        try:
-            raw = await r.get(key)
-            return json.loads(raw) if raw else None
-        except Exception:
-            return None
-    return None
+    try:
+        raw = await r.get(key)
+    except Exception as exc:
+        _mark_redis_failed()
+        raise MarketCacheUnavailable("Redis read failed") from exc
+    return json.loads(raw) if raw else None
 
 
 async def set_json(key: str, value: Any, ttl: Optional[int] = None) -> None:
     raw = json.dumps(value, ensure_ascii=False)
     r = await _client()
-    if r is not None:
-        try:
-            if ttl:
-                await r.set(key, raw, ex=ttl)
-            else:
-                await r.set(key, raw)
-        except Exception:
-            pass
+    try:
+        if ttl:
+            await r.set(key, raw, ex=ttl)
+        else:
+            await r.set(key, raw)
+    except Exception as exc:
+        _mark_redis_failed()
+        raise MarketCacheUnavailable("Redis write failed") from exc
 
 
 async def overwrite_json(key: str, value: Any, ttl: Optional[int] = None) -> Any:

@@ -22,7 +22,14 @@ pip install -r requirements.txt
 - **数据库**：`DATABASE_URL=sqlite:///./stock_assistant.db`（默认即可）
 - **LLM**：`LLM_MODEL`、`LLM_API_KEY`、`LLM_API_BASE`（见 `backend/.env.example`）
 - **数据源**：`DEFAULT_DATA_SOURCE=akshare`（无需 key）或 alphavantage/tushare 并填写对应 key
+- **市场主页**：配置 `DEFAULT_MARKET_DATA_SOURCE=xgb` 及 `XGB_FLASH_API_BASE`、`XGB_DDC_MARKET_API_BASE`、`XGB_TREND_API_BASE`、`XGB_REFERER`（见 `backend/.env.example`）；需要切换数据源时可设置 `MARKET_DATA_BINDINGS`
+- **情绪专题**：配置 `TDX_API_BASE_URL`（及可选 `TDX_TIMEOUT`）获取市场日线；涨跌停池与资金数据由 AKShare 同步，网络需要代理时配置 `AKSHARE_USE_PROXY=True` 与 `AKSHARE_PROXY_URL`
+- **世界杯专题**：默认使用 Polymarket 与 ESPN 赛程；按需配置 `WORLDCUP_POLYMARKET_*`、`WORLDCUP_SCHEDULE_*`，需要赔率或赛程增强时再启用 `WORLDCUP_ODDS_API_*`、`WORLDCUP_API_FOOTBALL_*`
 - **时区**：`APP_TIMEZONE=Asia/Shanghai`（统一默认时区，影响系统定时任务、日志时间、自动化任务默认值）
+
+在 `frontend/.env.local` 中至少配置：
+
+- `NEXT_PUBLIC_APP_CIPHER_KEY_MATERIAL`：与后端 `APP_CIPHER_KEY_MATERIAL` 使用同一个值。
 
 可选：联网搜索需 `SEARCH_API_ENABLED=True`、`SEARCH_ENGINE=serpapi`、`SERPAPI_API_KEY`。
 
@@ -35,6 +42,10 @@ python -m app.cli.init_db   # 或按项目实际命令创建库表、默认管�
 ```
 
 若没有单独 init 命令，直接启动后端会在首次启动时建表；默认账户见项目根 README（如 admin/admin123）。
+
+### 4. 配置市场策略（上线前）
+
+市场主页的评分权重由 `backend/data/strategy/private.defaults.json` 提供，该文件不会入库。首次部署生成的权重均为 `0`，上线前请写入真实权重；详见 [策略配置说明](../backend/data/strategy/README.md)。
 
 ---
 

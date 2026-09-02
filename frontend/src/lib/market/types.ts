@@ -260,6 +260,8 @@ export type ReboundPick = {
   inMainline: boolean;
   /** 今日曾封板后炸板（观察池） */
   brokeToday?: boolean;
+  /** 昨日曾封板后炸板（观察池） */
+  brokeYesterday?: boolean;
   /** 当日炸板次数 */
   zbc?: number;
   /** 回封时间（确认组） */

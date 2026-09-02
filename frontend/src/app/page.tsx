@@ -403,7 +403,7 @@ function RelayCyclePanel({
       <div className="rounded-[24px] border border-border/70 bg-background/70 p-5">
         <div className="text-sm font-semibold text-foreground">异动反包</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          范围=当日异动池∪炸板池；覆盖 连板反包 / 首板反包 / 炸板回封 三类形态，按参与价值分级。
+          范围=当日异动池∪当日炸板池∪昨日炸板池；昨日炸板仅在今日修复≥3%时纳入，覆盖三类反包形态。
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           {(
@@ -478,6 +478,7 @@ function RelayCyclePanel({
                             <span className="text-[10px] text-muted-foreground">
                               前{boardHeightLabel(stock.prevHeight)}·断{stock.gapDays}日
                               {stock.brokeToday ? '·炸' : ''}
+                              {stock.brokeYesterday ? '·昨炸' : ''}
                               {stock.wasLeader ? '·前龙头' : ''}
                               {stock.inMainline ? '·主线' : ''}
                             </span>

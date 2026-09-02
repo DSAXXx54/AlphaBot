@@ -25,7 +25,7 @@ import type {
  * 两个口径均基于历史复盘：
  * - 接力：空间龙头断板日，同题材首板是新龙头的主要来源（百花→神奇→汉森→千金）；
  *   断板日首板按 同题材/早封/低价/大封单/低炸板 缩圈，次日 1进2 确认。
- * - 异动反包：范围 = 当日异动池 ∪ 当日炸板池（不再全市场扫），从里找三类
+ * - 异动反包：观察范围 = 当日异动池 ∪ 当日炸板池 ∪ 昨日炸板池（不再全市场扫），从里找三类
  *   形态——连板反包（前高≥2 断≥1日回封）、首板反包（前高=1）、炸板回封
  *   （当日炸板后回封）。按参与价值评分分级：确认组（已回封）/ 观察池
  *   （临封 ≥7% / 修复 3~7%）。盲打成功率低（连板反包次日继续率 ~17%），
@@ -148,18 +148,10 @@ function scoreFirstBoard(
     add('midPrice', fb.midPrice, '低价');
   }
   const fund = (stock.fund || 0) / 1e8;
-  const turnoverRate = stock.turnoverRate || 0;
   if (fund >= fb.fundStrongYi) {
     add('fundStrong', fb.fundStrong, '封单1亿+');
   } else if (fund >= fb.fundMidYi) {
     add('fundMid', fb.fundMid, '封单实');
-  }
-  if (turnoverRate >= fb.turnoverHotMin) {
-    add('turnoverHotPenalty', -fb.turnoverHotPenalty, `换手过热${turnoverRate.toFixed(1)}%`);
-  } else if (turnoverRate >= fb.turnoverBestMin && turnoverRate <= fb.turnoverBestMax) {
-    add('turnoverBest', fb.turnoverBest, `换手甜区${turnoverRate.toFixed(1)}%`);
-  } else if (turnoverRate >= fb.turnoverMidMin && turnoverRate < fb.turnoverMidMax) {
-    add('turnoverMid', fb.turnoverMid, `换手适中${turnoverRate.toFixed(1)}%`);
   }
   if ((stock.zbc || 0) <= fb.lowZbcMax) {
     add('lowZbc', fb.lowZbc, '低炸板');
@@ -349,8 +341,8 @@ function detectResealsAt(series: DaySeries[], dayIndex: number, mainlineThemes: 
 }
 
 /**
- * 观察池：范围内（当日异动池 ∪ 当日炸板池）尚未回封的断板/炸板股。
- * 异动池锁定范围——当日无异动的断板股不再列出。昨日涨停今日断板记 gapDays=1。
+ * 观察池：范围内（当日异动池 ∪ 当日炸板池 ∪ 昨日炸板池）尚未回封的断板/炸板股。
+ * 昨日炸板股只在今日涨幅达到修复阈值后展示；当日无异动的普通断板股不再列出。
  */
 function buildReboundWatching(
   series: DaySeries[],
@@ -373,6 +365,13 @@ function buildReboundWatching(
       universe.set(code, { name: stock.name, concepts: stockConcepts(stock) });
     }
   });
+  const yesterday = series[series.length - 2];
+  yesterday?.zb.forEach((stock) => {
+    const code = normalizeCode(stock.code);
+    if (!universe.has(code)) {
+      universe.set(code, { name: stock.name, concepts: stockConcepts(stock) });
+    }
+  });
 
   const results: ReboundPick[] = [];
   universe.forEach((meta, code) => {
@@ -385,10 +384,10 @@ function buildReboundWatching(
     if (prior) {
       prevHeight = prior.stock.lbc || 1;
       gapDays = series.length - 1 - prior.idx;
-    } else if (today.zbByCode.has(code)) {
-      gapDays = 1; // 今日首板炸板：今日首次冲板失败
+    } else if (today.zbByCode.has(code) || yesterday?.zbByCode.has(code)) {
+      gapDays = 1; // 当日或昨日首板炸板：首次冲板失败
     } else {
-      return; // 无涨停史且非当日炸板 → 不属于断板/炸板形态
+      return; // 无涨停史且非当日/昨日炸板 → 不属于断板/炸板形态
     }
     const wasLeader = Boolean(prior && prevHeight >= series[prior.idx].maxHeight);
     const inMainline = meta.concepts.some((name) => mainlineThemes.has(name));
@@ -417,6 +416,7 @@ function buildReboundWatching(
       wasLeader,
       inMainline,
       brokeToday: today.zbByCode.has(code),
+      brokeYesterday: Boolean(yesterday?.zbByCode.has(code)),
       change: null,
       price: null,
       turnoverRate: brokenStock?.turnoverRate ?? null,
@@ -426,7 +426,8 @@ function buildReboundWatching(
   });
   return results
     .sort((a, b) => b.score - a.score || a.gapDays - b.gapDays)
-    .slice(0, getStrategy().rebound.watchLimit);
+    // 昨日炸板要等实时行情确认修复，扩大候选窗口后再在快照层截断最终展示数量。
+    .slice(0, getStrategy().rebound.watchLimit * 3);
 }
 
 export function buildRelaySnapshot(params: {

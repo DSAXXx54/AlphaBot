@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     APP_PUBLIC_BASE_URL: str = os.getenv("APP_PUBLIC_BASE_URL", "")
     APP_TIMEZONE: str = os.getenv("APP_TIMEZONE", "Asia/Shanghai")
+    APP_CIPHER_KEY_MATERIAL: str = os.getenv("APP_CIPHER_KEY_MATERIAL", "")
     
     # 基础目录
     BASE_DIR: str = os.getenv("BASE_DIR", "./") 

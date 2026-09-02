@@ -228,6 +228,10 @@ class StrategyData(BaseModel):
     private: dict = Field(default_factory=dict)
 
 
+class EncryptedStrategyData(BaseModel):
+    payload: str
+
+
 class StrategyUpdateRequest(BaseModel):
     version: str | None = None
     private: dict = Field(default_factory=dict)

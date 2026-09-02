@@ -115,14 +115,6 @@ export type StrategyConfig = {
       fundStrongYi: number;
       fundMid: number;
       fundMidYi: number;
-      turnoverBest: number;
-      turnoverBestMin: number;
-      turnoverBestMax: number;
-      turnoverMid: number;
-      turnoverMidMin: number;
-      turnoverMidMax: number;
-      turnoverHotPenalty: number;
-      turnoverHotMin: number;
       lowZbc: number;
       lowZbcMax: number;
     };
@@ -385,7 +377,8 @@ async function fetchPrivateOverrides(): Promise<unknown | null> {
   try {
     const result = await fetchStrategyPrivateOverrides();
     return result.private ?? null;
-  } catch {
+  } catch (error) {
+    console.warn('[market strategy] 解密失败，已降级为公开策略', error);
     return null;
   }
 }

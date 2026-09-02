@@ -116,7 +116,7 @@ uvicorn app.main:app --reload
 ```bash
 cd frontend
 npm install
-npm start
+npm run dev
 ```
 
 #### DB CLI
@@ -134,8 +134,22 @@ After accessing the application, you can directly use the newly launched AlphaBo
 2. Input your financial questions or analysis needs
 3. Enable the "Web Search" feature to get the latest information
 4. View AI-generated professional analysis and recommendations
+5. Administrators can schedule, publish, and send market briefs from "Automation"
 
 ![AlphaBot Agent Demo](materials/agent_demo.png)
+
+## 🧩 Using Market and Topic Homes
+
+After signing in, switch the home view to explore market information and topics:
+
+1. Open `/?view=market` for the Market Home
+2. Review market trends, sentiment, and themes
+3. Open `/?view=topic` for the Topic Home
+4. Browse standalone topics
+5. Before production, configure Market Home strategy weights in the [quick start](docs/QUICKSTART.md); otherwise, market scores are `0`
+
+![Market Home placeholder](materials/home-market-placeholder.png)
+![Topic Home placeholder](materials/home-topic-placeholder.png)
 
 ## 📝 Trader's Oath
 

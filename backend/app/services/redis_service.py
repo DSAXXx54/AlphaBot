@@ -26,6 +26,11 @@ def get_async_redis_client(preferred_url: Optional[str] = None) -> redis_asyncio
     url = resolve_redis_url(preferred_url)
     client = _clients.get(url)
     if client is None:
-        client = redis_asyncio.from_url(url, decode_responses=True)
+        client = redis_asyncio.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=1,
+            socket_timeout=2,
+        )
         _clients[url] = client
     return client

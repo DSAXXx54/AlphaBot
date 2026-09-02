@@ -55,6 +55,15 @@ check_env_file() {
     else
         print_message "环境配置文件已存在 ✓"
     fi
+
+    if [ ! -f "./frontend/.env.local" ]; then
+        if [ ! -f "./frontend/.env.example" ]; then
+            print_error "未找到 frontend/.env.example"
+            exit 1
+        fi
+        cp ./frontend/.env.example ./frontend/.env.local
+        print_message "已从示例文件创建 frontend/.env.local 文件"
+    fi
 }
 
 # 训练机器学习模型
@@ -141,4 +150,4 @@ main() {
 }
 
 # 执行主函数
-main 
+main

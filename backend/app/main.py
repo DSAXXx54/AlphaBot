@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import uvicorn
 import os
 import asyncio
@@ -17,6 +18,7 @@ from app.services.telegram_poller import run_telegram_poller
 from app.services.worldcup_service import WorldCupService
 from app.services.sentiment_service import SentimentService
 from app.services.automation_service import AutomationService
+from app.services.market_cache import MarketCacheUnavailable
 from app.core.mcp_host import McpHostRegistry
 import asyncio
 
@@ -143,6 +145,14 @@ app = FastAPI(
     redoc_url=f"{settings.API_V1_STR}/redoc",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(MarketCacheUnavailable)
+async def market_cache_unavailable_handler(_request: Request, _exc: MarketCacheUnavailable):
+    return JSONResponse(
+        status_code=503,
+        content={"success": False, "error": "市场缓存服务不可用，请检查 Redis 连接后重试"},
+    )
 
 # 添加请求频率限制中间件
 app.add_middleware(RateLimitMiddleware)

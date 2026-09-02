@@ -434,15 +434,18 @@ export async function loadMainlineSnapshot(): Promise<MarketMainlineSnapshot> {
     surge: context.surge,
     mainlineThemes: new Set(mainlineLanes.map((lane) => lane.name)),
   });
-  // 观察池挂一笔批量实时行情（20s TTL），用于临封/修复分级
+  // 观察池挂一笔批量实时行情（20s TTL），用于临封/修复分级；昨日炸板股需先确认当日修复。
   if (relay && relay.reboundWatching.length > 0) {
     const quotes = await loadQuoteList(relay.reboundWatching.map((stock) => stock.code));
-    if (quotes.size > 0) {
-      relay.reboundWatching = relay.reboundWatching.map((stock) => {
+    const { repairPct } = getStrategy().rebound;
+    relay.reboundWatching = relay.reboundWatching
+      .map((stock) => {
         const quote = quotes.get(normalizeCode(stock.code));
         return quote ? { ...stock, change: quote.change, price: quote.price } : stock;
-      });
-    }
+      })
+      .filter((stock) => !stock.brokeYesterday || (stock.change != null && stock.change >= repairPct))
+      .sort((a, b) => b.score - a.score || a.gapDays - b.gapDays)
+      .slice(0, getStrategy().rebound.watchLimit);
   }
   return {
     mainlineLanes,

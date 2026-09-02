@@ -7,6 +7,7 @@
  */
 
 import { api } from '../api';
+import { decryptClientPayload, type EncryptedClientPayload } from '../appCipher';
 
 const QUOTE_CHUNK_SIZE = 100;
 
@@ -168,7 +169,8 @@ export async function fetchTurnoverDomain(): Promise<{
 }
 
 export async function fetchStrategyPrivateOverrides(): Promise<{ version?: string; private?: unknown }> {
-  return domainObjectGet('/market/strategy');
+  const encrypted = await domainObjectGet<EncryptedClientPayload>('/market/strategy');
+  return decryptClientPayload(encrypted, 'alphabot:market-strategy:v1');
 }
 
 export async function updateStrategyPrivateOverrides(payload: { version?: string; private: Record<string, unknown> }): Promise<{ version?: string; private?: unknown }> {

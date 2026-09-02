@@ -10,6 +10,55 @@ from app.services.market_strategy_service import MarketStrategyService
 
 
 class TestMarketRouteContracts:
+
+    def test_market_strategy_read_returns_encrypted_envelope(self, client, auth_headers, monkeypatch):
+        async def fake_get_strategy():
+            return {"version": "test", "private": {"rebound": {"weights": {"gap2": 8}}}}
+
+        monkeypatch.setattr(MarketDomainService, "get_strategy", fake_get_strategy)
+
+        response = client.get("/api/v1/market/strategy", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["payload"].startswith("v1.")
+        assert "private" not in data
+        assert set(data) == {"payload"}
+
+    def test_market_strategy_write_requires_admin(self, client, auth_headers, monkeypatch):
+        async def fail_if_called(*_args, **_kwargs):
+            raise AssertionError("non-admin must not write market strategy")
+
+        monkeypatch.setattr(MarketDomainService, "set_strategy", fail_if_called)
+
+        response = client.put(
+            "/api/v1/market/strategy",
+            headers=auth_headers,
+            json={"version": "manual-test", "private": {"rebound": {"weights": {"gap2": 8}}}},
+        )
+
+        assert response.status_code == 403
+
+    def test_market_strategy_admin_can_write(self, client, auth_headers, db, test_user, monkeypatch):
+        test_user.is_admin = True
+        db.commit()
+
+        async def fake_set_strategy(private, version):
+            assert private == {"rebound": {"weights": {"gap2": 8}}}
+            assert version == "manual-test"
+            return {"version": version, "private": private}
+
+        monkeypatch.setattr(MarketDomainService, "set_strategy", fake_set_strategy)
+
+        response = client.put(
+            "/api/v1/market/strategy",
+            headers=auth_headers,
+            json={"version": "manual-test", "private": {"rebound": {"weights": {"gap2": 8}}}},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["version"] == "manual-test"
+
     def test_market_universe_returns_list_envelope(self, client, auth_headers, monkeypatch):
         async def fake_get_universe():
             return {"date": "20260830", "items": [{"code": "123", "name": "AI", "change": 1.2}]}

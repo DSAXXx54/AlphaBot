@@ -118,7 +118,7 @@ uvicorn app.main:app --reload
 ```bash
 cd frontend
 npm install
-npm start
+npm run dev
 ```
 
 #### 数据库工具
@@ -136,8 +136,22 @@ backend/app/cli/README.md
 2. 输入您的金融问题或分析需求
 3. 启用"联网搜索"功能获取最新资讯
 4. 查看AI生成的专业分析和建议
+5. 管理员可在"自动化"中定时生成、发布市场日报并配置推送通知
 
 ![AlphaBot Agent演示](materials/agent_demo.png)
+
+## 🧩 使用市场与专题主页
+
+登录后，您可以通过首页切换查看市场信息与专题内容：
+
+1. 访问 `/?view=market` 进入市场主页
+2. 查看市场主线、情绪与热点方向
+3. 访问 `/?view=topic` 进入专题主页
+4. 浏览独立专题内容
+5. 首次部署前请按 [快速开始](docs/QUICKSTART.md) 配置市场策略权重，否则市场评分为 `0`
+
+![市场主页占位图](materials/home-market-placeholder.png)
+![专题主页占位图](materials/home-topic-placeholder.png)
 
 ## 📝 交易者誓言
 

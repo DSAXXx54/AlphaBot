@@ -2,9 +2,10 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.api.routes.user import get_current_user
+from app.api.routes.user import get_current_admin, get_current_user
 from app.schemas.market import (
     ApiEnvelope,
+    EncryptedStrategyData,
     FundflowData,
     IntradayEmotionData,
     LatestMarketContextData,
@@ -26,10 +27,14 @@ from app.schemas.market import (
 )
 from app.services.market_domain_service import MarketDomainService
 from app.services.market_emotion_service import MarketEmotionService
+from app.services.app_cipher import encrypt_client_payload
 from app.services.trading_calendar_service import TradingCalendarService
 from app.utils.response import api_response
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+_STRATEGY_CIPHER_AAD = b"alphabot:market-strategy:v1"
+_STRATEGY_NOTICE = "策略参数仅供 AlphaBot 正常使用；若认可本项目，欢迎赞助支持持续维护。"
 
 
 @router.get("/trading-calendar", response_model=ApiEnvelope[TradingCalendarData])
@@ -135,11 +140,20 @@ async def get_turnover():
     return api_response(data=await MarketDomainService.get_turnover())
 
 
-@router.get("/strategy", response_model=ApiEnvelope[StrategyData])
+@router.get("/strategy", response_model=ApiEnvelope[EncryptedStrategyData])
 async def get_strategy():
-    return api_response(data=await MarketDomainService.get_strategy())
+    strategy = await MarketDomainService.get_strategy()
+    return api_response(
+        data=encrypt_client_payload(
+            {"version": strategy.get("version"), "private": strategy.get("private", {}), "notice": _STRATEGY_NOTICE},
+            aad=_STRATEGY_CIPHER_AAD,
+        )
+    )
 
 
 @router.put("/strategy", response_model=ApiEnvelope[StrategyData])
-async def put_strategy(payload: StrategyUpdateRequest):
+async def put_strategy(
+    payload: StrategyUpdateRequest,
+    _current_user=Depends(get_current_admin),
+):
     return api_response(data=await MarketDomainService.set_strategy(payload.private, payload.version))
