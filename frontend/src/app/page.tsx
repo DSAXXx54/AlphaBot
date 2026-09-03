@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { StockInfo } from '../types';
 import { ChartLine, Search, Settings, Info, Bot, LogIn, User, LogOut, Key, Flame, Trophy, Sparkles, RefreshCw, Lock } from 'lucide-react';
@@ -20,7 +20,7 @@ import {
   loadPayoffSnapshot,
   loadTrendSnapshot,
 } from '@/lib/market/snapshot';
-import type { MarketCardLabel, MarketSnapshot, ReboundPick, RelaySnapshot } from '@/lib/market/types';
+import type { MarketCardLabel, MarketEmotionPoint, MarketMainlineLane, MarketSnapshot, ReboundPick, RelaySnapshot, ShortEmotionSnapshot } from '@/lib/market/types';
 import { isAuthRequiredView, loginUrl, parseHomeView } from '@/lib/authRedirect';
 import { StockPreviewTooltip as MarketStockPreviewTooltip } from '@/components/StockPreviewTooltip';
 
@@ -41,6 +41,61 @@ type HomeViewMode = 'stock' | 'market' | 'topic';
 
 const MODE_STORAGE_KEY = 'alphabot-home-view-mode';
 const VIEW_MODE_ORDER: HomeViewMode[] = ['stock', 'market', 'topic'];
+
+type OpportunityMapStageId = 'breakout' | 'leader' | 'adjustment' | 'rotation' | 'weak' | 'collapse';
+
+type OpportunityMapStage = {
+  id: OpportunityMapStageId;
+  label: string;
+  signal: string;
+  opportunity: string;
+  risk: string;
+};
+
+type OpportunityMapAssessment = {
+  stage: OpportunityMapStageId;
+  evidence: string[];
+};
+
+const OPPORTUNITY_MAP_STAGES: OpportunityMapStage[] = [
+  { id: 'breakout', label: '板块爆发', signal: '首板扩散，强势股开始连板', opportunity: '只做最早共振的首板、1进2和最强分支。', risk: '回避无板块呼应的独立涨停。' },
+  { id: 'leader', label: '核心龙头', signal: '最高标持续打开，资金向核心集中', opportunity: '聚焦龙头、容量中军，等分歧承接或回封。', risk: '回避一致后排补涨。' },
+  { id: 'adjustment', label: '龙头调整', signal: '高标断板或震荡，承接强弱待确认', opportunity: '仅做跌而不弱的核心低吸、回封。', risk: '回避失去承接的炸板高标。' },
+  { id: 'rotation', label: '题材轮动', signal: '资金切换到低位或新分支', opportunity: '找刚启动、尚未充分轮动的题材。', risk: '回避轮动末端追涨。' },
+  { id: 'weak', label: '市场走弱', signal: '情绪重心下移，高标反馈变差', opportunity: '缩仓，只观察抗跌核心与新题材试错。', risk: '回避接力和高位加速。' },
+  { id: 'collapse', label: '板块崩溃', signal: '亏钱效应扩散，板块强度坍塌', opportunity: '空仓等待首批止跌并重新爆发的题材。', risk: '回避退潮抄底和弱势反抽。' },
+];
+
+const OPPORTUNITY_MAP_POSITIONS = [
+  { left: '28%', top: '8%' },
+  { left: '72%', top: '8%' },
+  { left: '88%', top: '47%' },
+  { left: '72%', top: '83%' },
+  { left: '28%', top: '83%' },
+  { left: '12%', top: '47%' },
+] as const;
+
+function assessOpportunityMap(
+  emotion: MarketEmotionPoint | null,
+  shortEmotion: ShortEmotionSnapshot | null,
+  lanes: MarketMainlineLane[],
+  relay: RelaySnapshot | null
+): OpportunityMapAssessment {
+  const value = shortEmotion?.latestValue ?? 0;
+  const maxHeight = emotion?.maxHeight ?? 0;
+  const activeLanes = lanes.filter((lane) => lane.ztCount > 0).length;
+  const emotionEvidence = shortEmotion?.latestValue != null ? `短线情绪 ${value.toFixed(2)}（${shortEmotion.zone || '未分区'}）` : '短线情绪数据待加载';
+  const heightEvidence = maxHeight > 0 ? `最高板 ${maxHeight} 板` : '最高板数据待加载';
+  const laneEvidence = activeLanes > 0 ? `活跃主线 ${activeLanes} 条` : '主线数据待加载';
+  const breaks = relay?.breaksToday.length || 0;
+
+  if (value <= -4) return { stage: 'collapse', evidence: [emotionEvidence, heightEvidence, breaks > 0 ? `当日高标断板 ${breaks} 只` : '亏钱效应优先观察'] };
+  if (value < 0) return { stage: 'weak', evidence: [emotionEvidence, heightEvidence, laneEvidence] };
+  if (breaks > 0 && maxHeight >= 3) return { stage: 'adjustment', evidence: [heightEvidence, `当日高标断板 ${breaks} 只`, laneEvidence] };
+  if (maxHeight >= 5 && activeLanes <= 2) return { stage: 'leader', evidence: [heightEvidence, laneEvidence, emotionEvidence] };
+  if (activeLanes >= 3) return { stage: 'rotation', evidence: [laneEvidence, heightEvidence, emotionEvidence] };
+  return { stage: 'breakout', evidence: [laneEvidence, heightEvidence, emotionEvidence] };
+}
 
 const HOME_VIEW_MODES: Record<HomeViewMode, {
   navLabel: string;
@@ -532,8 +587,10 @@ export default function Home() {
   const [loadedMarketCards, setLoadedMarketCards] = useState<Record<MarketCardLabel, boolean>>(() => ({ ...EMPTY_CARD_DETAILS }));
   const [activeMarketCard, setActiveMarketCard] = useState<MarketCardLabel | null>(null);
   const [selectedEmotionDate, setSelectedEmotionDate] = useState<string | null>(null);
-  const [emotionDetailTab, setEmotionDetailTab] = useState<'ladder' | 'short'>('ladder');
+  const [emotionDetailTab, setEmotionDetailTab] = useState<'ladder' | 'short' | 'map'>('ladder');
   const [shortEmotionCycle, setShortEmotionCycle] = useState<1 | 3 | 5 | 10 | 20>(5);
+  const [opportunityMapFocus, setOpportunityMapFocus] = useState<OpportunityMapStageId | null>(null);
+  const [opportunityMapExpanded, setOpportunityMapExpanded] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const userButtonRef = useRef<HTMLButtonElement>(null);
   const topicMenuRef = useRef<HTMLDivElement>(null);
@@ -545,6 +602,21 @@ export default function Home() {
     emotionSeries.find((point) => point.fullDate === selectedEmotionDate) ??
     emotionSeries[emotionSeries.length - 1] ??
     null;
+  const opportunityAssessment = useMemo(
+    () => assessOpportunityMap(selectedEmotionPoint, marketSnapshot.shortEmotion, marketSnapshot.mainlineLanes, marketSnapshot.relay),
+    [marketSnapshot.mainlineLanes, marketSnapshot.relay, marketSnapshot.shortEmotion, selectedEmotionPoint]
+  );
+  const opportunityMapStage = opportunityMapFocus ?? opportunityAssessment.stage;
+  const opportunityMap = OPPORTUNITY_MAP_STAGES.find((stage) => stage.id === opportunityMapStage) || OPPORTUNITY_MAP_STAGES[0];
+  const topMainline = marketSnapshot.mainlineLanes[0] ?? null;
+
+  const toggleOpportunityMap = () => {
+    const nextExpanded = !opportunityMapExpanded;
+    setOpportunityMapExpanded(nextExpanded);
+    if (nextExpanded) {
+      void refreshMarket(['情绪', '主线', '趋势']);
+    }
+  };
 
   useEffect(() => {
     if (!isReady) return;
@@ -1135,8 +1207,8 @@ export default function Home() {
               </Link>
             </div>
           ) : viewMode === 'market' ? (
-            <div className="space-y-6">
-              <div className="grid gap-4 xl:grid-cols-4">
+            <div className="flex flex-col gap-6">
+              <div className="order-2 grid gap-4 xl:grid-cols-4">
                 {MARKET_DIAGNOSTICS.map((item) => {
                   const dynamicCard = marketSnapshot.diagnostics[item.label];
                   const isActive = activeMarketCard === item.label;
@@ -1212,6 +1284,52 @@ export default function Home() {
                 })}
               </div>
 
+              <div className="order-1 rounded-[24px] border border-orange-200/80 bg-gradient-to-r from-orange-50/80 via-background to-background px-5 py-4 dark:border-orange-400/20 dark:from-orange-950/20">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="text-sm font-semibold text-foreground">市场机会地图</div>
+                      <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-medium text-orange-700 dark:bg-orange-950/50 dark:text-orange-200">当前观察 · {OPPORTUNITY_MAP_STAGES.find((stage) => stage.id === opportunityAssessment.stage)?.label}</span>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">{opportunityAssessment.evidence.join(' · ')}</div>
+                  </div>
+                  <button type="button" onClick={toggleOpportunityMap} className="inline-flex shrink-0 items-center justify-center rounded-full border border-orange-200 bg-background px-3 py-1.5 text-xs font-medium text-orange-700 transition-colors hover:bg-orange-100 dark:border-orange-400/30 dark:text-orange-200">
+                    {cardRefreshing.情绪 || cardRefreshing.主线 || cardRefreshing.趋势 ? '正在同步数据…' : opportunityMapExpanded ? '收起地图' : '展开地图并同步数据'}
+                  </button>
+                </div>
+                {opportunityMapExpanded ? (
+                  <div className="mt-4 border-t border-orange-200/70 pt-4 dark:border-orange-400/20">
+                    <div className="relative mx-auto hidden h-[360px] w-full max-w-[760px] lg:block">
+                      <svg viewBox="0 0 760 380" className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
+                        <defs><marker id="market-cycle-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(249,115,22,0.65)" /></marker></defs>
+                        <path d="M 275 58 L 485 58 M 560 88 L 650 154 M 650 224 L 560 290 M 485 320 L 275 320 M 200 290 L 110 224 M 110 154 L 200 88" fill="none" stroke="rgba(249,115,22,0.5)" strokeWidth="2" markerEnd="url(#market-cycle-arrow)" />
+                      </svg>
+                      <div className="absolute left-1/2 top-1/2 w-[235px] -translate-x-1/2 -translate-y-1/2 rounded-[22px] border border-orange-200 bg-orange-50/95 px-4 py-3 text-center shadow-[0_12px_30px_rgba(249,115,22,0.10)] dark:border-orange-400/30 dark:bg-orange-950/50">
+                        <div className="text-[10px] text-muted-foreground">{opportunityMapFocus ? '机会剧本' : '当前观察'}</div>
+                        <div className="mt-1 text-sm font-semibold text-orange-700 dark:text-orange-200">{opportunityMap.label}</div>
+                        <div className="mt-1 text-[10px] leading-4 text-muted-foreground">{opportunityMapFocus ? opportunityMap.signal : opportunityAssessment.evidence.slice(0, 2).join(' · ')}</div>
+                        <div className="mt-2 border-t border-orange-200/70 pt-2 text-left dark:border-orange-400/20"><div className="text-[10px] text-foreground">优先：{opportunityMap.opportunity}</div><div className="mt-1 text-[10px] text-muted-foreground">风险：{opportunityMap.risk}</div></div>
+                        <div className="mt-2 flex flex-wrap justify-center gap-1.5">
+                          {opportunityMap.id === 'leader' && topMainline?.leader ? <button type="button" onClick={() => handleSelectMarketStock(topMainline.leader!.code, topMainline.leader!.name)} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white">核心龙头 · {topMainline.leader.name}</button> : opportunityMap.id === 'rotation' ? <button type="button" onClick={() => setActiveMarketCard('趋势')} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white">查看趋势排行</button> : opportunityMap.id === 'weak' || opportunityMap.id === 'collapse' ? <button type="button" onClick={() => { setEmotionDetailTab('ladder'); setActiveMarketCard('情绪'); }} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white">查看连板天梯</button> : <button type="button" onClick={() => setActiveMarketCard('主线')} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white">{opportunityMap.id === 'adjustment' ? '查看回封/断板' : '查看主线'}</button>}
+                          {opportunityMapFocus ? <button type="button" onClick={() => setOpportunityMapFocus(null)} className="rounded-full border border-orange-200 px-2.5 py-1 text-[10px] text-orange-700 dark:border-orange-400/30 dark:text-orange-200">返回当前观察</button> : null}
+                        </div>
+                      </div>
+                      {OPPORTUNITY_MAP_STAGES.map((stage, index) => {
+                        const active = stage.id === opportunityMapStage;
+                        return <button key={stage.id} type="button" onClick={() => setOpportunityMapFocus(stage.id)} style={OPPORTUNITY_MAP_POSITIONS[index]} className={`absolute w-[142px] -translate-x-1/2 -translate-y-1/2 rounded-[16px] border px-3 py-2.5 text-left shadow-sm transition-colors hover:border-orange-300 ${active ? 'border-orange-400 bg-orange-50 shadow-[0_10px_24px_rgba(249,115,22,0.16)] dark:border-orange-400/60 dark:bg-orange-950/40' : 'border-border/60 bg-background/90'}`}><div className="flex items-center gap-1.5"><span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold ${active ? 'bg-orange-500 text-white' : 'bg-muted text-muted-foreground'}`}>{index + 1}</span><span className="text-xs font-semibold text-foreground">{stage.label}</span></div><div className="mt-1 line-clamp-1 text-[10px] leading-4 text-muted-foreground">{stage.signal}</div></button>;
+                      })}
+                    </div>
+                    <div className="grid gap-2 lg:hidden">
+                      {OPPORTUNITY_MAP_STAGES.map((stage, index) => {
+                        const active = stage.id === opportunityMapStage;
+                        return <button key={stage.id} type="button" onClick={() => setOpportunityMapFocus(stage.id)} className={`rounded-[14px] border px-3 py-2 text-left text-xs ${active ? 'border-orange-400 bg-orange-50 dark:border-orange-400/50 dark:bg-orange-950/30' : 'border-border/60 bg-background/50'}`}>{index + 1}. {stage.label}</button>;
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="order-3">
               {!activeMarketCard ? (
                 <div className="rounded-[24px] border border-dashed border-border/70 bg-background/35 px-5 py-4 text-sm text-muted-foreground">
                   点击上方卡片，查看对应图表与事实对比。
@@ -1234,6 +1352,12 @@ export default function Home() {
                             <div className="text-sm font-semibold text-foreground">盘中情绪</div>
                             <div className="mt-1 text-xs text-muted-foreground">观察盘中正负情绪强弱变化。</div>
                           </div>
+                          <div className="rounded-[14px] border border-orange-200/70 bg-orange-50/60 px-3 py-2 text-right dark:border-orange-400/20 dark:bg-orange-950/20">
+                            <div className="text-[10px] text-muted-foreground">短线机会观察</div>
+                            <div className="mt-0.5 text-xs font-semibold text-orange-700 dark:text-orange-200">
+                              {OPPORTUNITY_MAP_STAGES.find((stage) => stage.id === opportunityAssessment.stage)?.label}
+                            </div>
+                          </div>
                         </div>
                         <div className="mt-4">
                           <IntradayEmotionChart data={marketSnapshot.intradayEmotion} />
@@ -1244,43 +1368,47 @@ export default function Home() {
                         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                           <div className="min-w-0">
                             <div className="text-sm font-semibold text-foreground">
-                              {emotionDetailTab === 'ladder' ? '连板天梯' : '短线情绪'}
+                              {emotionDetailTab === 'ladder' ? '连板天梯' : emotionDetailTab === 'short' ? '短线情绪' : '短线机会地图'}
                             </div>
                             <div className="mt-1 text-xs text-muted-foreground">
                               {emotionDetailTab === 'ladder'
                                 ? `观察近${shortEmotionCycle}日连板高度变化。`
-                                : `观察近${shortEmotionCycle}日短线情绪强弱变化。`}
+                                : emotionDetailTab === 'short'
+                                  ? `观察近${shortEmotionCycle}日短线情绪强弱变化。`
+                                  : '用情绪、连板高度和主线结构定位当前可做模式与风险。'}
                             </div>
                           </div>
                           <div className="flex items-center justify-end gap-3 self-start">
+                            {emotionDetailTab !== 'map' ? (
+                              <div className="inline-flex rounded-full border border-border/60 bg-background/80 p-1">
+                                {([1, 3, 5, 10, 20] as const).map((cycle) => {
+                                  const active = shortEmotionCycle === cycle;
+                                  return (
+                                    <button
+                                      key={cycle}
+                                      type="button"
+                                      onClick={() => setShortEmotionCycle(cycle)}
+                                      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                                        active ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'
+                                      }`}
+                                    >
+                                      {cycle}日
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
                             <div className="inline-flex rounded-full border border-border/60 bg-background/80 p-1">
-                              {([1, 3, 5, 10, 20] as const).map((cycle) => {
-                                const active = shortEmotionCycle === cycle;
-                                return (
-                                  <button
-                                    key={cycle}
-                                    type="button"
-                                    onClick={() => setShortEmotionCycle(cycle)}
-                                    className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                                      active ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'
-                                    }`}
-                                  >
-                                    {cycle}日
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            <div className="inline-flex rounded-full border border-border/60 bg-background/80 p-1">
-                              {[
+                              {([
                                 { key: 'short', label: '短线情绪' },
                                 { key: 'ladder', label: '连板天梯' },
-                              ].map((item) => {
+                              ] as const).map((item) => {
                                 const active = emotionDetailTab === item.key;
                                 return (
                                   <button
                                     key={item.key}
                                     type="button"
-                                    onClick={() => setEmotionDetailTab(item.key as 'ladder' | 'short')}
+                                    onClick={() => setEmotionDetailTab(item.key)}
                                     className={`rounded-full px-4 py-1.5 text-xs font-medium transition-colors ${
                                       active ? 'bg-orange-500 text-white' : 'text-muted-foreground hover:text-foreground'
                                     }`}
@@ -1293,15 +1421,118 @@ export default function Home() {
                           </div>
                         </div>
                         <div className="mt-4">
-                          <ShortEmotionChart
-                            mode={emotionDetailTab}
-                            cycle={shortEmotionCycle}
-                            series={emotionSeries}
-                            shortEmotion={marketSnapshot.shortEmotion}
-                            selectedDate={selectedEmotionDate}
-                            onSelectDate={setSelectedEmotionDate}
-                            onSelectStock={handleSelectMarketStock}
-                          />
+                          {emotionDetailTab === 'map' ? (
+                            <div className="space-y-3">
+                                <div className="relative mx-auto hidden h-[330px] max-w-[700px] md:block">
+                                  <svg viewBox="0 0 760 380" className="absolute inset-0 h-full w-full" aria-hidden="true">
+                                    <defs>
+                                      <marker id="opportunity-cycle-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(249,115,22,0.6)" />
+                                      </marker>
+                                    </defs>
+                                    <path d="M 275 58 L 485 58" fill="none" stroke="rgba(249,115,22,0.48)" strokeWidth="2" markerEnd="url(#opportunity-cycle-arrow)" />
+                                    <path d="M 560 88 L 650 154" fill="none" stroke="rgba(249,115,22,0.48)" strokeWidth="2" markerEnd="url(#opportunity-cycle-arrow)" />
+                                    <path d="M 650 224 L 560 290" fill="none" stroke="rgba(249,115,22,0.48)" strokeWidth="2" markerEnd="url(#opportunity-cycle-arrow)" />
+                                    <path d="M 485 320 L 275 320" fill="none" stroke="rgba(249,115,22,0.48)" strokeWidth="2" markerEnd="url(#opportunity-cycle-arrow)" />
+                                    <path d="M 200 290 L 110 224" fill="none" stroke="rgba(249,115,22,0.48)" strokeWidth="2" markerEnd="url(#opportunity-cycle-arrow)" />
+                                    <path d="M 110 154 L 200 88" fill="none" stroke="rgba(249,115,22,0.48)" strokeWidth="2" markerEnd="url(#opportunity-cycle-arrow)" />
+                                  </svg>
+                                  <div className="absolute left-1/2 top-1/2 w-[215px] -translate-x-1/2 -translate-y-1/2 rounded-[22px] border border-orange-200 bg-orange-50/95 px-4 py-3 text-center shadow-[0_12px_30px_rgba(249,115,22,0.10)] dark:border-orange-400/30 dark:bg-orange-950/50">
+                                    <div className="text-[10px] text-muted-foreground">{opportunityMapFocus ? '机会剧本' : '当前观察'}</div>
+                                    <div className="mt-1 text-sm font-semibold text-orange-700 dark:text-orange-200">{opportunityMap.label}</div>
+                                    <div className="mt-1 text-[10px] leading-4 text-muted-foreground">
+                                      {opportunityMapFocus ? opportunityMap.signal : opportunityAssessment.evidence.slice(0, 2).join(' · ')}
+                                    </div>
+                                    <div className="mt-2 border-t border-orange-200/70 pt-2 text-left dark:border-orange-400/20">
+                                      <div className="text-[10px] font-medium text-foreground">优先：{opportunityMap.opportunity}</div>
+                                      <div className="mt-1 text-[10px] leading-4 text-muted-foreground">风险：{opportunityMap.risk}</div>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap justify-center gap-1.5">
+                                      {opportunityMap.id === 'leader' && topMainline?.leader ? (
+                                        <button type="button" onClick={() => handleSelectMarketStock(topMainline.leader!.code, topMainline.leader!.name)} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white hover:bg-orange-600">
+                                          核心龙头 · {topMainline.leader.name}
+                                        </button>
+                                      ) : opportunityMap.id === 'rotation' ? (
+                                        <button type="button" onClick={() => setActiveMarketCard('趋势')} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white hover:bg-orange-600">查看趋势排行</button>
+                                      ) : opportunityMap.id === 'adjustment' ? (
+                                        <button type="button" onClick={() => setActiveMarketCard('主线')} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white hover:bg-orange-600">查看回封/断板</button>
+                                      ) : opportunityMap.id === 'weak' || opportunityMap.id === 'collapse' ? (
+                                        <button type="button" onClick={() => setEmotionDetailTab('ladder')} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white hover:bg-orange-600">查看连板天梯</button>
+                                      ) : (
+                                        <button type="button" onClick={() => setActiveMarketCard('主线')} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white hover:bg-orange-600">查看主线</button>
+                                      )}
+                                      {opportunityMapFocus ? <button type="button" onClick={() => setOpportunityMapFocus(null)} className="rounded-full border border-orange-200 px-2.5 py-1 text-[10px] text-orange-700 hover:bg-orange-100 dark:border-orange-400/30 dark:text-orange-200">返回当前观察</button> : null}
+                                    </div>
+                                  </div>
+                                  {OPPORTUNITY_MAP_STAGES.map((stage, index) => {
+                                    const active = stage.id === opportunityMapStage;
+                                    return (
+                                      <div key={stage.id} className="absolute w-[142px] -translate-x-1/2 -translate-y-1/2" style={OPPORTUNITY_MAP_POSITIONS[index]}>
+                                        <button type="button" onClick={() => setOpportunityMapFocus(stage.id)} className={`w-full rounded-[16px] border px-3 py-2.5 text-left shadow-sm transition-colors hover:border-orange-300 ${active ? 'border-orange-400 bg-orange-50 shadow-[0_10px_24px_rgba(249,115,22,0.16)] dark:border-orange-400/60 dark:bg-orange-950/40' : 'border-border/60 bg-background/85'}`}>
+                                          <div className="flex items-center gap-1.5">
+                                            <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold ${active ? 'bg-orange-500 text-white' : 'bg-muted text-muted-foreground'}`}>{index + 1}</span>
+                                            <span className="text-xs font-semibold text-foreground">{stage.label}</span>
+                                          </div>
+                                          <div className="mt-1 line-clamp-1 text-[10px] leading-4 text-muted-foreground">{stage.signal}</div>
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                <div className="grid gap-2 md:hidden">
+                                  {OPPORTUNITY_MAP_STAGES.map((stage, index) => {
+                                    const active = stage.id === opportunityMapStage;
+                                    return <button type="button" key={stage.id} onClick={() => setOpportunityMapFocus(stage.id)} className={`rounded-[14px] border px-3 py-2 text-left text-xs ${active ? 'border-orange-400 bg-orange-50 dark:border-orange-400/50 dark:bg-orange-950/30' : 'border-border/60 bg-background/50'}`}>{index + 1}. {stage.label}</button>;
+                                  })}
+                                </div>
+                                <div className="rounded-[18px] border border-orange-200 bg-orange-50/80 px-4 py-3 md:hidden dark:border-orange-400/30 dark:bg-orange-950/30">
+                                  <div className="text-[10px] text-muted-foreground">{opportunityMapFocus ? '机会剧本' : '当前观察'}</div>
+                                  <div className="mt-1 text-sm font-semibold text-orange-700 dark:text-orange-200">{opportunityMap.label}</div>
+                                  <div className="mt-1 text-[10px] leading-4 text-muted-foreground">{opportunityMapFocus ? opportunityMap.signal : opportunityAssessment.evidence.slice(0, 2).join(' · ')}</div>
+                                  <div className="mt-2 text-[10px] text-foreground">优先：{opportunityMap.opportunity}</div>
+                                  <div className="mt-1 text-[10px] text-muted-foreground">风险：{opportunityMap.risk}</div>
+                                  <div className="mt-2 flex flex-wrap gap-1.5">
+                                    {opportunityMap.id === 'leader' && topMainline?.leader ? (
+                                      <button type="button" onClick={() => handleSelectMarketStock(topMainline.leader!.code, topMainline.leader!.name)} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white">核心龙头 · {topMainline.leader.name}</button>
+                                    ) : opportunityMap.id === 'rotation' ? (
+                                      <button type="button" onClick={() => setActiveMarketCard('趋势')} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white">查看趋势排行</button>
+                                    ) : opportunityMap.id === 'weak' || opportunityMap.id === 'collapse' ? (
+                                      <button type="button" onClick={() => setEmotionDetailTab('ladder')} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white">查看连板天梯</button>
+                                    ) : (
+                                      <button type="button" onClick={() => setActiveMarketCard('主线')} className="rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-medium text-white">{opportunityMap.id === 'adjustment' ? '查看回封/断板' : '查看主线'}</button>
+                                    )}
+                                    {opportunityMapFocus ? <button type="button" onClick={() => setOpportunityMapFocus(null)} className="rounded-full border border-orange-200 px-2.5 py-1 text-[10px] text-orange-700">返回当前观察</button> : null}
+                                  </div>
+                                </div>
+                              {marketSnapshot.mainlineLanes.length > 0 ? (
+                                <div className="rounded-[18px] border border-border/60 bg-background/50 px-4 py-3">
+                                  <div className="text-xs text-muted-foreground">当前关联主线</div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {marketSnapshot.mainlineLanes.slice(0, 3).map((lane) => (
+                                      <button
+                                        key={lane.name}
+                                        type="button"
+                                        onClick={() => lane.leader ? handleSelectMarketStock(lane.leader.code, lane.leader.name) : setActiveMarketCard('主线')}
+                                        className="rounded-full bg-muted/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-orange-100 hover:text-orange-700 dark:hover:bg-orange-950/40 dark:hover:text-orange-200"
+                                      >
+                                        {lane.name}{lane.leader ? ` · ${lane.leader.name} ${lane.leader.lbc}板` : ''}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <ShortEmotionChart
+                              mode={emotionDetailTab}
+                              cycle={shortEmotionCycle}
+                              series={emotionSeries}
+                              shortEmotion={marketSnapshot.shortEmotion}
+                              selectedDate={selectedEmotionDate}
+                              onSelectDate={setSelectedEmotionDate}
+                              onSelectStock={handleSelectMarketStock}
+                            />
+                          )}
                         </div>
                       </div>
 
@@ -1497,6 +1728,7 @@ export default function Home() {
                   )}
                 </>
               )}
+              </div>
             </div>
           ) : (
             <div className="grid gap-4 lg:grid-cols-3">
