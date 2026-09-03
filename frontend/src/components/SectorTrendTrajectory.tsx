@@ -58,6 +58,8 @@ type TopicInsight = {
   latest: TopicHistoryPoint;
   state: SectorPulseState;
   stateReason: string;
+  /** 排行榜右侧展示前一交易日的历史状态，避免与名称旁当日状态重复。 */
+  previousState: SectorPulseState;
   scoreDelta1d: number;
   scoreDelta3d: number;
   flowDelta1d: number;
@@ -505,12 +507,15 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
         const points = historiesWithRank[topic.id] || [fallbackHistoryPoint(topic, index + 1)];
         const latest = points[points.length - 1] || points[0];
         const pulse = classifyPulse(topic, points);
+        const previousPoints = points.length > 1 ? points.slice(0, -1) : points;
+        const previousPulse = classifyPulse(topic, previousPoints);
         return {
           topic,
           points,
           latest,
           state: pulse.state,
           stateReason: pulse.stateReason,
+          previousState: previousPulse.state,
           scoreDelta1d: pulse.scoreDelta1d,
           scoreDelta3d: pulse.scoreDelta3d,
           flowDelta1d: pulse.flowDelta1d,
@@ -909,7 +914,7 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
                     <div className="text-right">
                       <div className="text-xs text-muted-foreground">{viewMode === 'today' ? '历史状态' : '历史位次'}</div>
                       {viewMode === 'today' ? (
-                        <div className={cn('mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium', PULSE_STYLES[item.state])}>{item.state}</div>
+                        <div className={cn('mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium', PULSE_STYLES[item.previousState])}>{item.previousState}</div>
                       ) : (
                         <div className="mt-1 text-sm font-semibold text-foreground">#{item.latestRank}</div>
                       )}
@@ -1186,8 +1191,8 @@ export default function SectorTrendTrajectory({ data, onSelectStock }: SectorTre
               ) : null}
 
               {(() => {
-                // 柱体跟随 hover：悬停其他板块折线时切换显示该板块的资金强度
-                const barTopicId = hover?.topicId ?? selectedTopic?.id ?? null;
+                // 柱体始终绑定当前选中板块，与右侧近10日轨迹保持同一对象。
+                const barTopicId = selectedTopic?.id ?? null;
                 const barEntry = chartTopics.find(({ topic }) => topic.id === barTopicId);
                 if (!barEntry || barEntry.points.length === 0) return null;
                 const { topic: barTopic, points: barHistory } = barEntry;
