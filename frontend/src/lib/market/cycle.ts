@@ -18,17 +18,17 @@ import type {
  * 情绪周期衍生数据：龙头接力 + 异动反包。
  *
  * 数据全部来自 xgb 涨停/炸板池的按日历史（loadTopicPools，date 参数支持
- * 任意交易日回看）+ 当日异动池（surge_stock，锁定候选范围）+ 异动池自带
+ * 任意交易日回看）+ 上游当日异动池（surge_stock）+ 近6日涨停异动池（本地派生）+
+ * 异动池自带
  * analysis 文案。零新增请求。回看窗口由交易日历决定；池为空的日期
  * （拉取失败）整体剔除，避免把"无数据日"误判成断板事件。
  *
  * 两个口径均基于历史复盘：
  * - 接力：空间龙头断板日，同题材首板是新龙头的主要来源（百花→神奇→汉森→千金）；
  *   断板日首板按 同题材/早封/低价/大封单/低炸板 缩圈，次日 1进2 确认。
- * - 异动反包：观察范围 = 当日异动池 ∪ 当日炸板池 ∪ 昨日炸板池（不再全市场扫），从里找三类
- *   形态——连板反包（前高≥2 断≥1日回封）、首板反包（前高=1）、炸板回封
- *   （当日炸板后回封）。按参与价值评分分级：确认组（已回封）/ 观察池
- *   （临封 ≥7% / 修复 3~7%）。盲打成功率低（连板反包次日继续率 ~17%），
+ * - 异动反包：候选先分三组——当日异动池里的连板反包（前高≥2、断≥1日）、
+ *   首板反包（前高=1、断≥1日），以及其余当日/昨日炸板组成的炸板回封组。候选
+ *   封板后仍留在原组，只更新为已回封；不再从当日全部涨停池补扫。盲打成功率低，
  *   卡片定位是范围锁定 + 分级提示 + 退潮确认。
  */
 
@@ -340,94 +340,151 @@ function detectResealsAt(series: DaySeries[], dayIndex: number, mainlineThemes: 
   return results;
 }
 
-/**
- * 观察池：范围内（当日异动池 ∪ 当日炸板池 ∪ 昨日炸板池）尚未回封的断板/炸板股。
- * 昨日炸板股只在今日涨幅达到修复阈值后展示；当日无异动的普通断板股不再列出。
- */
-function buildReboundWatching(
+type ReboundCandidateSeed = {
+  name: string;
+  code: string;
+  concepts: string[];
+  analysis?: string;
+  pattern: ReboundPattern;
+  brokeToday: boolean;
+  brokeYesterday: boolean;
+};
+
+/** 实时反包候选只由三种形态组产生；连板/首板反包优先，炸板组承接其余股票。 */
+function buildReboundCandidates(
   series: DaySeries[],
   surge: SurgeLimitStock[],
   mainlineThemes: Set<string>
-): ReboundPick[] {
+): { confirmed: ReboundPick[]; watching: ReboundPick[] } {
   const today = series[series.length - 1];
+  const dayIndex = series.length - 1;
+  const yesterday = series[series.length - 2];
   const surgeByCode = new Map<string, SurgeLimitStock>();
   surge.forEach((stock) => {
     const code = normalizeCode(stock.code);
     if (code && !surgeByCode.has(code)) surgeByCode.set(code, stock);
   });
-  const universe = new Map<string, { name: string; concepts: string[]; analysis?: string }>();
+
+  const todayBroken = new Map(today.zb.map((stock) => [normalizeCode(stock.code), stock]));
+  const yesterdayBroken = new Map((yesterday?.zb || []).map((stock) => [normalizeCode(stock.code), stock]));
+  const candidates = new Map<string, ReboundCandidateSeed>();
+
+  // 连板/首板反包只来自当日异动池，且已有至少一个完整断板日。
+  // 若同时炸板，保留反包形态并用炸板标签描述当天走势。
   surgeByCode.forEach((stock, code) => {
-    universe.set(code, { name: stock.name, concepts: stock.plates || [], analysis: stock.analysis });
-  });
-  today.zb.forEach((stock) => {
-    const code = normalizeCode(stock.code);
-    if (!universe.has(code)) {
-      universe.set(code, { name: stock.name, concepts: stockConcepts(stock) });
-    }
-  });
-  const yesterday = series[series.length - 2];
-  yesterday?.zb.forEach((stock) => {
-    const code = normalizeCode(stock.code);
-    if (!universe.has(code)) {
-      universe.set(code, { name: stock.name, concepts: stockConcepts(stock) });
-    }
+    if (isDelistingRisk(stock.name)) return;
+    const prior = lastSeal(series, dayIndex, code);
+    if (!prior) return;
+    const gapDays = dayIndex - prior.idx - 1;
+    if (gapDays < 1) return;
+    candidates.set(code, {
+      name: stock.name,
+      code,
+      concepts: stock.plates || [],
+      analysis: stock.analysis,
+      pattern: (prior.stock.lbc || 1) >= 2 ? '连板反包' : '首板反包',
+      brokeToday: todayBroken.has(code),
+      brokeYesterday: yesterdayBroken.has(code),
+    });
   });
 
-  const results: ReboundPick[] = [];
-  universe.forEach((meta, code) => {
-    if (isDelistingRisk(meta.name)) return; // 退市风险股剔除
-    if (today.byCode.has(code)) return; // 已回封，在确认组
-    const brokenStock = today.zb.find((stock) => normalizeCode(stock.code) === code);
-    const prior = lastSeal(series, series.length - 1, code);
-    let prevHeight = 1;
-    let gapDays: number;
-    if (prior) {
-      prevHeight = prior.stock.lbc || 1;
-      gapDays = series.length - 1 - prior.idx;
-    } else if (today.zbByCode.has(code) || yesterday?.zbByCode.has(code)) {
-      gapDays = 1; // 当日或昨日首板炸板：首次冲板失败
-    } else {
-      return; // 无涨停史且非当日/昨日炸板 → 不属于断板/炸板形态
-    }
+  // 不满足连板/首板反包条件的当日、昨日炸板，才归入炸板回封组。
+  today.zb.forEach((stock) => {
+    const code = normalizeCode(stock.code);
+    if (candidates.has(code)) return;
+    const surgeStock = surgeByCode.get(code);
+    candidates.set(code, {
+      name: stock.name,
+      code,
+      concepts: surgeStock?.plates || stockConcepts(stock),
+      analysis: surgeStock?.analysis,
+      pattern: '炸板回封',
+      brokeToday: true,
+      brokeYesterday: yesterdayBroken.has(code),
+    });
+  });
+  yesterday?.zb.forEach((stock) => {
+    const code = normalizeCode(stock.code);
+    if (candidates.has(code)) return;
+    const surgeStock = surgeByCode.get(code);
+    candidates.set(code, {
+      name: stock.name,
+      code,
+      concepts: surgeStock?.plates || stockConcepts(stock),
+      analysis: surgeStock?.analysis,
+      pattern: '炸板回封',
+      brokeToday: false,
+      brokeYesterday: true,
+    });
+  });
+
+  const confirmed: ReboundPick[] = [];
+  const watching: ReboundPick[] = [];
+  candidates.forEach((candidate, code) => {
+    if (isDelistingRisk(candidate.name)) return;
+    const sealedStock = today.byCode.get(code);
+    const brokenStock = todayBroken.get(code);
+    const prior = lastSeal(series, dayIndex, code);
+    const prevHeight = prior?.stock.lbc || 1;
+    // 断板天数始终不含今天，盘中观察与回封确认使用同一口径。
+    const gapDays = prior ? dayIndex - prior.idx - 1 : 0;
     const wasLeader = Boolean(prior && prevHeight >= series[prior.idx].maxHeight);
-    const inMainline = meta.concepts.some((name) => mainlineThemes.has(name));
-    const zbc = brokenStock?.zbc || 0;
-    const pattern: ReboundPattern = prevHeight >= 2 ? '连板反包' : '首板反包';
+    const inMainline = candidate.concepts.some((name) => mainlineThemes.has(name));
+    const zbc = sealedStock?.zbc || brokenStock?.zbc || 0;
+    const fundYi = sealedStock ? (sealedStock.fund || 0) / 1e8 : undefined;
+    const washMinutes =
+      candidate.brokeToday &&
+      sealedStock?.firstBreak &&
+      sealedStock.lastSealTs &&
+      sealedStock.lastSealTs > sealedStock.firstBreak
+        ? Math.max(1, Math.round((sealedStock.lastSealTs - sealedStock.firstBreak) / 60))
+        : undefined;
     const { score, reasons, breakdown } = scoreReboundPick({
-      pattern,
+      pattern: candidate.pattern,
       prevHeight,
       gapDays,
       zbc,
       wasLeader,
       inMainline,
-      isConfirmed: false,
+      isConfirmed: Boolean(sealedStock),
       marketMaxHeight: today.maxHeight,
-      turnoverRate: brokenStock?.turnoverRate,
+      sealTimeMin: sealedStock?.time,
+      fundYi,
+      turnoverRate: sealedStock?.turnoverRate ?? brokenStock?.turnoverRate,
     });
-    results.push({
-      name: meta.name,
+    const pick: ReboundPick = {
+      name: candidate.name,
       code,
-      pattern,
-      themes: Array.from(new Set(meta.concepts.map((name) => name.trim()).filter(Boolean))).slice(0, 2),
+      pattern: candidate.pattern,
+      themes: Array.from(new Set(candidate.concepts.map((name) => name.trim()).filter(Boolean))).slice(0, 2),
       prevHeight,
       gapDays,
+      hasPriorSeal: Boolean(prior),
       score,
       reasons,
       wasLeader,
       inMainline,
-      brokeToday: today.zbByCode.has(code),
-      brokeYesterday: Boolean(yesterday?.zbByCode.has(code)),
+      brokeToday: candidate.brokeToday,
+      brokeYesterday: candidate.brokeYesterday,
       change: null,
-      price: null,
-      turnoverRate: brokenStock?.turnoverRate ?? null,
-      analysis: meta.analysis,
+      sealTime: sealedStock ? sealClock(sealedStock.time) : undefined,
+      fund: fundYi,
+      price: sealedStock?.price ?? null,
+      turnoverRate: sealedStock?.turnoverRate ?? brokenStock?.turnoverRate ?? null,
+      analysis: candidate.analysis,
       zbc,
-    });
+      washMinutes,
+      breakdown,
+    };
+    if (sealedStock) confirmed.push(pick);
+    else watching.push(pick);
   });
-  return results
-    .sort((a, b) => b.score - a.score || a.gapDays - b.gapDays)
+
+  return {
+    confirmed: confirmed.sort((a, b) => b.score - a.score).slice(0, getStrategy().rebound.confirmedLimit),
     // 昨日炸板要等实时行情确认修复，扩大候选窗口后再在快照层截断最终展示数量。
-    .slice(0, getStrategy().rebound.watchLimit * 3);
+    watching: watching.sort((a, b) => b.score - a.score || a.gapDays - b.gapDays).slice(0, getStrategy().rebound.watchLimit * 3),
+  };
 }
 
 export function buildRelaySnapshot(params: {
@@ -518,12 +575,10 @@ export function buildRelaySnapshot(params: {
       .slice(0, getStrategy().relay.watchlistLimit);
   }
 
-  // ── 异动反包：确认组（已回封）+ 观察池（范围内未回封）+ 分形态历史继续率 ──
-  const reboundConfirmed = detectResealsAt(series, lastIdx, mainlineThemes)
-    .map((item) => item.pick)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, getStrategy().rebound.confirmedLimit);
-  const reboundWatching = buildReboundWatching(series, surge, mainlineThemes);
+  // ── 异动反包：三种形态候选，再按当日是否回封拆成状态 ──
+  const reboundCandidates = buildReboundCandidates(series, surge, mainlineThemes);
+  const reboundConfirmed = reboundCandidates.confirmed;
+  const reboundWatching = reboundCandidates.watching;
   const reboundStats: { rebreak: ReboundTierStats; firstBoard: ReboundTierStats; reseal: ReboundTierStats } = {
     rebreak: { total: 0, continued: 0 },
     firstBoard: { total: 0, continued: 0 },

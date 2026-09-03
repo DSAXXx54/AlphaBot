@@ -237,10 +237,10 @@ export type RelayCandidate = {
 };
 
 /** 今日反包股：前一轮 lbc≥2，断 ≥1 日后回封 */
-/** 异动反包形态：确认组按此分类，观察池按前高标注待回封形态 */
+/** 异动反包分组：连板/首板来自当日异动，炸板回封承接其余当日或昨日炸板 */
 export type ReboundPattern = '连板反包' | '首板反包' | '炸板回封';
 
-/** 异动反包候选（确认组=已回封；观察池=未回封，change 由快照层补行情） */
+/** 异动反包候选（分组=形态；确认/临封/修复等为当天状态） */
 export type ReboundPick = {
   name: string;
   code: string;
@@ -248,8 +248,10 @@ export type ReboundPick = {
   themes?: string[];
   /** 前高（最后一次涨停日的连板高度；今日首板炸板无历史时记 1） */
   prevHeight: number;
-  /** 确认组=断板间隔（炸板回封为 0）；观察池=今日距上次涨停的天数（昨日涨停=1） */
+  /** 上次涨停后的完整未涨停交易日数，不含今天 */
   gapDays: number;
+  /** 回看窗口内是否找到上次涨停；炸板组没有时不展示前高/断板标签 */
+  hasPriorSeal?: boolean;
   /** 参与价值评分（组内排序用） */
   score: number;
   /** 评分理由（短标签） */
@@ -258,20 +260,20 @@ export type ReboundPick = {
   wasLeader: boolean;
   /** 属于当日主线题材 */
   inMainline: boolean;
-  /** 今日曾封板后炸板（观察池） */
+  /** 今日炸板 */
   brokeToday?: boolean;
-  /** 昨日曾封板后炸板（观察池） */
+  /** 昨日炸板 */
   brokeYesterday?: boolean;
   /** 当日炸板次数 */
   zbc?: number;
-  /** 回封时间（确认组） */
+  /** 回封时间（已回封状态） */
   sealTime?: string;
-  /** 封单额（亿元，确认组） */
+  /** 封单额（亿元，已回封状态） */
   fund?: number;
   price?: number | null;
   /** 换手率% */
   turnoverRate?: number | null;
-  /** 实时涨幅%（观察池，行情缺失为 null） */
+  /** 实时涨幅%（未回封状态，行情缺失为 null） */
   change?: number | null;
   /** 异动池文案 */
   analysis?: string;
@@ -295,9 +297,9 @@ export type RelaySnapshot = {
   breaksToday: RelayBreak[];
   /** breaksToday 非空时的首板缩圈名单 */
   watchlist: RelayCandidate[];
-  /** 异动反包：今日已回封（连板反包/首板反包/炸板回封），按参与价值排序 */
+  /** 异动反包三组中今日已回封的候选，按参与价值排序 */
   reboundConfirmed: ReboundPick[];
-  /** 异动反包观察池（范围内未回封：首板断板/连板断板/炸板未回封，盘中挂实时涨幅） */
+  /** 异动反包三组中未回封候选，盘中挂实时涨幅 */
   reboundWatching: ReboundPick[];
   /** 分形态历史继续率（回封次日仍在涨停池；窗口内、不含今日） */
   reboundStats: {

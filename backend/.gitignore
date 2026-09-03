@@ -50,3 +50,5 @@ data/published_reports
 # 市场采集数据 / 私有策略（数据资产，不入库）
 data/market/
 data/strategy/*.json
+# Chroma 数据库
+data/chroma

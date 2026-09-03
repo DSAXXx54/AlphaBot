@@ -403,7 +403,7 @@ function RelayCyclePanel({
       <div className="rounded-[24px] border border-border/70 bg-background/70 p-5">
         <div className="text-sm font-semibold text-foreground">异动反包</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          范围=当日异动池∪当日炸板池∪昨日炸板池；昨日炸板仅在今日修复≥3%时纳入，覆盖三类反包形态。
+          连板/首板反包来自当日异动池，炸板仅作走势标记；其余当日和昨日炸板归入炸板回封（昨炸修复≥3%后展示）。
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           {(
@@ -459,6 +459,13 @@ function RelayCyclePanel({
                     {items.map((stock) => {
                       const status = reboundStatus(stock);
                       const change = stock.change;
+                      const breakLabels = [stock.brokeToday ? '炸板' : '', stock.brokeYesterday ? '昨炸' : '']
+                        .filter(Boolean)
+                        .join('·');
+                      const patternLabel =
+                        stock.pattern === '炸板回封'
+                          ? `${breakLabels || '炸板'}${stock.hasPriorSeal ? `·前${boardHeightLabel(stock.prevHeight)}·断${stock.gapDays}日` : ''}`
+                          : `前${boardHeightLabel(stock.prevHeight)}·断${stock.gapDays}日${breakLabels ? `·${breakLabels}` : ''}`;
                       return (
                         <MarketStockPreviewTooltip
                           key={stock.code}
@@ -476,9 +483,7 @@ function RelayCyclePanel({
                             />
                             <span className="font-medium text-foreground">{stock.name}</span>
                             <span className="text-[10px] text-muted-foreground">
-                              前{boardHeightLabel(stock.prevHeight)}·断{stock.gapDays}日
-                              {stock.brokeToday ? '·炸' : ''}
-                              {stock.brokeYesterday ? '·昨炸' : ''}
+                              {patternLabel}
                               {stock.wasLeader ? '·前龙头' : ''}
                               {stock.inMainline ? '·主线' : ''}
                             </span>

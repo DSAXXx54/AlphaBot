@@ -11,6 +11,7 @@ import {
   loadTurnover,
   stockConcepts,
   type PlateFlow,
+  type SurgeLimitStock,
   type TopicStock,
 } from './api';
 import { cached, TTL } from './client';
@@ -37,6 +38,29 @@ export type { MarketSnapshot } from './types';
 
 const DEFAULT_EMOTION_DAYS = 5;
 const FULL_EMOTION_DAYS = 20;
+
+/** 从最近涨停池派生盘中异动源，不依赖上游 surge 是否收录该股票。 */
+function buildRecentLimitUpUniverse(
+  days: string[],
+  latestDay: string,
+  ztByDate: Map<string, TopicStock[]>
+): SurgeLimitStock[] {
+  const latestIndex = days.lastIndexOf(latestDay);
+  const priorDays = (latestIndex >= 0 ? days.slice(0, latestIndex) : days.slice(0, -1)).slice(-getStrategy().rebound.lookback);
+  const stocks = new Map<string, SurgeLimitStock>();
+  priorDays.forEach((date) => {
+    (ztByDate.get(date) || []).forEach((stock) => {
+      const code = normalizeCode(stock.code);
+      if (!code) return;
+      stocks.set(code, {
+        code,
+        name: stock.name,
+        plates: stockConcepts(stock),
+      });
+    });
+  });
+  return Array.from(stocks.values());
+}
 
 export type MarketEmotionSnapshot = {
   emotionSeries: MarketEmotionPoint[];
@@ -427,17 +451,31 @@ export async function loadMainlineSnapshot(): Promise<MarketMainlineSnapshot> {
     latestDay: context.latestDay,
     trendingPlates: trending,
   });
+  const recentLimitUpUniverse = buildRecentLimitUpUniverse(relayDays, context.latestDay, relayPools.ztByDate);
+  const latestRelayDay = relayDays[relayDays.length - 1];
+  const previousRelayDay = relayDays[relayDays.length - 2];
+  // 一笔行情同时用于派生近6日涨停异动池和观察池状态，复用既有 20s 缓存。
+  const quoteCodes = new Set([
+    ...recentLimitUpUniverse.map((stock) => stock.code),
+    ...context.surge.map((stock) => stock.code),
+    ...(latestRelayDay ? relayPools.zbByDate.get(latestRelayDay) || [] : []).map((stock) => stock.code),
+    ...(previousRelayDay ? relayPools.zbByDate.get(previousRelayDay) || [] : []).map((stock) => stock.code),
+  ]);
+  const quotes = await loadQuoteList(Array.from(quoteCodes));
+  const { repairPct } = getStrategy().rebound;
+  const recentLimitUpSurge = recentLimitUpUniverse.filter((stock) => {
+    const quote = quotes.get(normalizeCode(stock.code));
+    return quote?.change != null && quote.change >= repairPct;
+  });
   const relay = buildRelaySnapshot({
     days: relayDays,
     ztByDate: relayPools.ztByDate,
     zbByDate: relayPools.zbByDate,
-    surge: context.surge,
+    surge: [...context.surge, ...recentLimitUpSurge],
     mainlineThemes: new Set(mainlineLanes.map((lane) => lane.name)),
   });
-  // 观察池挂一笔批量实时行情（20s TTL），用于临封/修复分级；昨日炸板股需先确认当日修复。
+  // 观察池使用同一笔实时行情补全状态；昨日炸板股需先确认当日修复。
   if (relay && relay.reboundWatching.length > 0) {
-    const quotes = await loadQuoteList(relay.reboundWatching.map((stock) => stock.code));
-    const { repairPct } = getStrategy().rebound;
     relay.reboundWatching = relay.reboundWatching
       .map((stock) => {
         const quote = quotes.get(normalizeCode(stock.code));
